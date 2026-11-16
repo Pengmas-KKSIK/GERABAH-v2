@@ -2,14 +2,15 @@ import { prisma } from "@/lib/prisma";
 import { getCurrentUser } from "@/lib/current-user";
 import { requireOwner } from "@/lib/guards";
 import { updateBusiness } from "@/lib/actions/business";
-import { addStaff, removeStaff } from "@/lib/actions/staff";
+import { addStaff, removeStaff, resetStaffPassword } from "@/lib/actions/staff";
+import Link from "next/link";
 import { ActionButton } from "@/components/action-button";
 import { PasswordField } from "@/components/password-field";
 import { PageHeader } from "@/components/page-header";
 import { Card, List, Row, SectionTitle, Disclosure, DetailList, Avatar } from "@/components/ui";
 import { ActionForm, SubmitButton } from "@/components/form";
 import { LogoutButton } from "@/components/logout-button";
-import { IconTrash, IconPlus } from "@/components/icons";
+import { IconTrash, IconPlus, IconLock, IconChevronRight } from "@/components/icons";
 
 export default async function SettingsPage() {
   const business = await requireOwner();
@@ -109,6 +110,33 @@ export default async function SettingsPage() {
       </ActionForm>
       </Disclosure>
 
+      {staff.length > 0 && (
+        <div className="mt-3">
+          <Disclosure title="Atur ulang kata sandi staf" icon={<IconLock className="h-5 w-5" strokeWidth={2} />}>
+            <ActionForm action={resetStaffPassword} footer={<SubmitButton>Simpan Kata Sandi Baru</SubmitButton>}>
+              <div className="flex flex-col gap-4">
+                <p className="text-help">Staf lupa kata sandi? Buat kata sandi baru di sini, lalu beri tahu dia langsung.</p>
+                <label className="block">
+                  <span className="field-label">Staf</span>
+                  <select name="id" required className="field" defaultValue="">
+                    <option value="" disabled>
+                      Pilih staf
+                    </option>
+                    {staff.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name} ({s.email})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <PasswordField name="password" label="Kata sandi baru" autoComplete="new-password" minLength={8} showHint />
+                <PasswordField name="confirmPassword" label="Ulangi kata sandi baru" autoComplete="new-password" minLength={8} />
+              </div>
+            </ActionForm>
+          </Disclosure>
+        </div>
+      )}
+
       <SectionTitle>Akun</SectionTitle>
       <DetailList
         rows={[
@@ -117,6 +145,12 @@ export default async function SettingsPage() {
           ["Data tersimpan", `${prodCat} kategori · ${channels} tempat jualan · ${methods} cara bayar`],
         ]}
       />
+
+      <Link href="/account" className="btn btn-secondary mt-4 w-full">
+        <IconLock className="h-[18px] w-[18px]" strokeWidth={2} />
+        Ganti Kata Sandi Saya
+        <IconChevronRight className="h-4 w-4" strokeWidth={2} />
+      </Link>
 
       <div className="mt-6">
         <LogoutButton />

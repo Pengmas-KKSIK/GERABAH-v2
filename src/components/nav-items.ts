@@ -14,6 +14,7 @@ import {
   IconClipboardCheck,
   IconMenu,
   IconHourglass,
+  IconLock,
 } from "./icons";
 
 export type Role = "owner" | "staff";
@@ -62,7 +63,10 @@ export const NAV_GROUPS: NavGroup[] = [
   },
   {
     title: "Lainnya",
-    items: [{ href: "/help", label: "Bantuan", icon: IconHelp, tone: "stone" }],
+    items: [
+      { href: "/account", label: "Akun Saya", icon: IconLock, tone: "stone" },
+      { href: "/help", label: "Bantuan", icon: IconHelp, tone: "stone" },
+    ],
   },
 ];
 
