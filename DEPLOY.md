@@ -3,10 +3,10 @@
 ## 1. Import project
 
 1. Buka https://vercel.com → **Add New… → Project**
-2. **Import** repo `aranasamanta4-ctrl/GERABAH-v2`
-   (kalau belum connect, sambungkan akun GitHub-nya dulu)
+2. **Import** repo `Pengmas-KKSIK/sistempencatatankeuangan`
+   (kalau organisasi `Pengmas-KKSIK` belum muncul, pilih **Add GitHub Scope** dan pasang Vercel GitHub App di organisasi itu)
 3. Framework otomatis terdeteksi **Next.js**. Jangan ubah Build/Output settings —
-   `vercel.json` sudah mengatur region `sin1` + `prisma migrate deploy`.
+   `vercel.json` sudah mengatur region `sin1` + build `prisma generate && next build`.
 
 ## 2. Environment Variables
 
@@ -56,6 +56,12 @@ Klik **Deploy**. Build: `prisma generate && next build`.
 > Supabase pooler (advisory lock tidak didukung di session pooler). Skema dikelola dari lokal.
 
 Selesai → dapat URL `https://gerabah-v2-xxxx.vercel.app`.
+
+> **Produksi saat ini:** project Vercel `sistempencatatankeuangan` → https://sistempencatatankeuangan.vercel.app,
+> tersambung ke `Pengmas-KKSIK/sistempencatatankeuangan` (branch `main`). Database dan Storage ada di
+> project Supabase `sistempencatatankeuangan`. Alamat lama https://gerabah-v2-whxs.vercel.app otomatis
+> diarahkan ke alamat baru. Repo ini dulu bernama `GERABAH-v2` di akun `aranasamanta4-ctrl`. Kalau push ke `main` tidak memicu deploy, cek **Vercel → Settings → Git**:
+> kalau tertulis *Project Link not found*, klik **Disconnect** lalu sambungkan ulang ke repo di organisasi.
 
 ## 4. Setiap ada perubahan skema DB
 
