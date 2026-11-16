@@ -1,58 +1,59 @@
-"""Generates the PWA/app icons from a single definition, so the mark stays
-consistent across every size. Re-run after changing the palette."""
+"""Membuat ikon PWA/aplikasi dari satu sumber, supaya logo sama di semua ukuran.
+
+Sumber: public/brand/gerabara-mark-1024.png (kendi Gerabara, latar transparan).
+Jalankan dari folder proyek setelah mengganti berkas sumber:
+
+    python scripts/make-icons.py
+"""
 
 from PIL import Image, ImageDraw
 
-TERRACOTTA = (189, 91, 56, 255)
-CREAM = (252, 248, 244, 255)
-SS = 4  # supersample factor
+SOURCE = "public/brand/gerabara-mark-1024.png"
+CREAM = (253, 245, 234, 255)  # sama dengan --color-brand-cream
+SS = 4  # faktor supersample agar tepi halus
 
 
-def draw_pot(size: int, inset: float, rounded: bool) -> Image.Image:
-    """inset = fraction of the canvas kept clear around the mark (maskable safe zone)."""
+def load_mark() -> Image.Image:
+    mark = Image.open(SOURCE).convert("RGBA")
+    return mark.crop(mark.getbbox())  # buang tepi kosong
+
+
+def fit(mark: Image.Image, box: int) -> Image.Image:
+    scale = min(box / mark.width, box / mark.height)
+    return mark.resize((round(mark.width * scale), round(mark.height * scale)), Image.LANCZOS)
+
+
+def centered(mark: Image.Image, size: int) -> Image.Image:
+    canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    canvas.alpha_composite(mark, ((size - mark.width) // 2, (size - mark.height) // 2))
+    return canvas
+
+
+def tile(mark: Image.Image, size: int, frac: float, rounded: bool) -> Image.Image:
+    """frac = bagian kanvas yang diisi logo (ikon maskable butuh ruang aman lebih lebar)."""
     s = size * SS
-
     bg = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    b = ImageDraw.Draw(bg)
+    draw = ImageDraw.Draw(bg)
     if rounded:
-        b.rounded_rectangle([0, 0, s - 1, s - 1], radius=int(s * 0.22), fill=TERRACOTTA)
+        draw.rounded_rectangle([0, 0, s - 1, s - 1], radius=int(s * 0.225), fill=CREAM)
     else:
-        b.rectangle([0, 0, s - 1, s - 1], fill=TERRACOTTA)
-
-    mark = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    m = ImageDraw.Draw(mark)
-
-    box = s * (1 - 2 * inset)
-    ox = oy = s * inset
-
-    def px(fx: float, fy: float):
-        return ox + box * fx, oy + box * fy
-
-    stroke = max(2, int(box * 0.082))
-    rim_y = 0.26
-    top, bottom, left, right = 0.02, 0.98, 0.07, 0.93
-
-    # Body: a round-bellied pot, slightly wider than tall.
-    m.ellipse([*px(left, top), *px(right, bottom)], outline=CREAM, width=stroke)
-    # Cut the belly off above the rim so it reads as an open vessel, not a ball.
-    m.rectangle([0, 0, s, oy + box * rim_y], fill=(0, 0, 0, 0))
-
-    # Rim: span the body's actual width at the cut, plus a potter's overhang.
-    cx, cy = (left + right) / 2, (top + bottom) / 2
-    half_w, half_h = (right - left) / 2, (bottom - top) / 2
-    dx = half_w * (1 - ((rim_y - cy) / half_h) ** 2) ** 0.5 + 0.035
-    m.line([*px(cx - dx, rim_y), *px(cx + dx, rim_y)], fill=CREAM, width=stroke)
-
-    return Image.alpha_composite(bg, mark).resize((size, size), Image.LANCZOS)
+        draw.rectangle([0, 0, s, s], fill=CREAM)
+    scaled = fit(mark, int(s * frac))
+    bg.alpha_composite(scaled, ((s - scaled.width) // 2, (s - scaled.height) // 2))
+    return bg.resize((size, size), Image.LANCZOS)
 
 
 def main():
-    draw_pot(512, 0.17, True).save("public/icon-512.png")
-    draw_pot(192, 0.17, True).save("public/icon-192.png")
-    draw_pot(180, 0.17, False).save("src/app/apple-icon.png")  # Next emits the apple-touch-icon link
-    # Maskable icons get cropped to a circle by Android — keep the mark well inside.
-    draw_pot(512, 0.27, False).save("public/icon-maskable-512.png")
-    print("icons written")
+    mark = load_mark()
+    tile(mark, 512, 0.72, True).save("public/icon-512.png")
+    tile(mark, 192, 0.72, True).save("public/icon-192.png")
+    # iOS membulatkan sudut sendiri dan tidak menerima transparansi.
+    tile(mark, 180, 0.70, False).convert("RGB").save("src/app/apple-icon.png")
+    # Android memotong ikon maskable jadi lingkaran — logo harus berada di tengah.
+    tile(mark, 512, 0.56, False).convert("RGB").save("public/icon-maskable-512.png")
+    # Tab browser: kendi saja tanpa kotak, supaya tetap terbaca di ukuran 16 px.
+    centered(fit(mark, 256), 256).save("src/app/favicon.ico", sizes=[(16, 16), (32, 32), (48, 48), (64, 64)])
+    print("ikon selesai dibuat")
 
 
 if __name__ == "__main__":

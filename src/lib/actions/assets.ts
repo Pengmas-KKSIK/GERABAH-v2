@@ -3,26 +3,43 @@
 import { revalidatePath } from "next/cache";
 import { prisma } from "@/lib/prisma";
 import { formatIDRPlain } from "@/lib/format";
-import { type FormState, run, requireOwner, findOrCreateFixedCostCategory, parseAmount, logActivity } from "./_helpers";
+import { fixedCostPeriodLabel } from "@/lib/labels";
+import { wibDate, wibParts } from "@/lib/date-range";
+import {
+  type FormState,
+  UserError,
+  run,
+  requireOwner,
+  findOrCreateFixedCostCategory,
+  parseAmount,
+  parseDateField,
+  parseIntField,
+  oneOf,
+  text,
+  logActivity,
+} from "./_helpers";
 
+const PERIODS = ["monthly", "yearly", "one_time"] as const;
+
+/** Tambah bulan menurut kalender WIB; tanggal 31 di bulan pendek jadi akhir bulan itu. */
 function addMonths(date: Date, months: number) {
-  const d = new Date(date);
-  d.setMonth(d.getMonth() + months);
-  return d;
+  const p = wibParts(date);
+  const lastDay = wibParts(wibDate(p.year, p.month + months + 1, 0)).day;
+  return wibDate(p.year, p.month + months, Math.min(p.day, lastDay));
 }
 
 export async function createAsset(_prev: FormState, formData: FormData): Promise<FormState> {
   const business = await requireOwner();
 
   const res = await run(async () => {
-    const name = String(formData.get("name") ?? "").trim();
-    const category = String(formData.get("category") ?? "Lainnya").trim() || "Lainnya";
+    const name = text(formData.get("name")).slice(0, 120);
+    // Pilihan di form hanya saran (ASSET_CATEGORIES); kategori sendiri boleh diketik.
+    const category = text(formData.get("category")).slice(0, 60) || "Lainnya";
     const purchaseValue = parseAmount(formData.get("purchaseValue"));
-    const purchaseDateRaw = String(formData.get("purchaseDate") ?? "");
-    const note = String(formData.get("note") ?? "").trim();
+    const note = text(formData.get("note"));
 
-    if (!name) throw new Error("Nama aset wajib diisi.");
-    if (purchaseValue <= 0) throw new Error("Isi nilai/harga asetnya dulu.");
+    if (!name) throw new UserError("Nama aset wajib diisi.");
+    if (purchaseValue <= 0) throw new UserError("Isi nilai/harga asetnya dulu.");
 
     await prisma.asset.create({
       data: {
@@ -30,7 +47,7 @@ export async function createAsset(_prev: FormState, formData: FormData): Promise
         name,
         category,
         purchaseValue,
-        purchaseDate: purchaseDateRaw ? new Date(purchaseDateRaw) : null,
+        purchaseDate: parseDateField(formData.get("purchaseDate")),
         note: note || null,
       },
     });
@@ -44,12 +61,12 @@ export async function createAsset(_prev: FormState, formData: FormData): Promise
 
 export async function deleteAsset(_prev: FormState, formData: FormData): Promise<FormState> {
   const business = await requireOwner();
-  const id = String(formData.get("id") ?? "");
+  const id = text(formData.get("id"));
 
   const res = await run(async () => {
-    const asset = await prisma.asset.findUnique({ where: { id } });
-    if (!asset || asset.businessId !== business.id) throw new Error("Aset tidak ditemukan.");
-    await prisma.asset.delete({ where: { id } });
+    const asset = await prisma.asset.findFirst({ where: { id, businessId: business.id } });
+    if (!asset) throw new UserError("Aset tidak ditemukan.");
+    await prisma.asset.delete({ where: { id: asset.id } });
     await logActivity(business.id, "asset.delete", `Hapus aset ${asset.name}`);
   });
 
@@ -62,36 +79,38 @@ export async function createFixedCost(_prev: FormState, formData: FormData): Pro
   const business = await requireOwner();
 
   const res = await run(async () => {
-    const name = String(formData.get("name") ?? "").trim();
-    const categoryName = String(formData.get("category") ?? "").trim();
+    const name = text(formData.get("name")).slice(0, 120);
     const amount = parseAmount(formData.get("amount"));
-    const period = String(formData.get("period") ?? "monthly");
-    const startDateRaw = String(formData.get("startDate") ?? "");
-    const durationMonthsRaw = String(formData.get("durationMonths") ?? "");
-    const durationMonths = durationMonthsRaw ? Math.max(0, Number(durationMonthsRaw) || 0) : null;
-    const note = String(formData.get("note") ?? "").trim();
+    const rawPeriod = text(formData.get("period")) || "monthly";
+    const durationMonths = parseIntField(formData.get("durationMonths"), { max: 600 }) || null;
+    const note = text(formData.get("note"));
 
-    if (!name) throw new Error("Nama biaya wajib diisi.");
-    if (amount <= 0) throw new Error("Isi jumlah biayanya dulu.");
-    if (!["monthly", "yearly", "one_time"].includes(period)) throw new Error("Periode tidak valid.");
+    if (!name) throw new UserError("Nama biaya wajib diisi.");
+    if (amount <= 0) throw new UserError("Isi jumlah biayanya dulu.");
+    if (!(PERIODS as readonly string[]).includes(rawPeriod)) throw new UserError("Periode tidak valid.");
+    const period = oneOf(rawPeriod, PERIODS, "monthly");
 
-    const startDate = startDateRaw ? new Date(startDateRaw) : new Date();
-    const categoryId = categoryName ? await findOrCreateFixedCostCategory(business.id, categoryName) : null;
+    const startDate = parseDateField(formData.get("startDate"), new Date())!;
+    const categoryId = await findOrCreateFixedCostCategory(business.id, text(formData.get("category")));
 
     await prisma.fixedCost.create({
       data: {
         businessId: business.id,
         name,
-        categoryId: categoryId ?? undefined,
+        categoryId,
         amount,
         period,
         startDate,
         endDate: durationMonths ? addMonths(startDate, durationMonths) : null,
-        durationMonths: durationMonths ?? undefined,
+        durationMonths,
         note: note || null,
       },
     });
-    await logActivity(business.id, "fixedcost.create", `Tambah biaya tetap ${name} (${formatIDRPlain(amount)}/${period === "monthly" ? "bulan" : period === "yearly" ? "tahun" : "sekali"})`);
+    await logActivity(
+      business.id,
+      "fixedcost.create",
+      `Tambah biaya tetap ${name} (${formatIDRPlain(amount)} · ${fixedCostPeriodLabel(period).toLowerCase()})`
+    );
   });
 
   if (res.error) return res;
@@ -101,12 +120,12 @@ export async function createFixedCost(_prev: FormState, formData: FormData): Pro
 
 export async function toggleFixedCostActive(_prev: FormState, formData: FormData): Promise<FormState> {
   const business = await requireOwner();
-  const id = String(formData.get("id") ?? "");
+  const id = text(formData.get("id"));
 
   const res = await run(async () => {
-    const fc = await prisma.fixedCost.findUnique({ where: { id } });
-    if (!fc || fc.businessId !== business.id) throw new Error("Biaya tetap tidak ditemukan.");
-    await prisma.fixedCost.update({ where: { id }, data: { active: !fc.active } });
+    const fc = await prisma.fixedCost.findFirst({ where: { id, businessId: business.id } });
+    if (!fc) throw new UserError("Biaya tetap tidak ditemukan.");
+    await prisma.fixedCost.update({ where: { id: fc.id }, data: { active: !fc.active } });
     await logActivity(business.id, "fixedcost.toggle", `${fc.active ? "Nonaktifkan" : "Aktifkan"} biaya tetap ${fc.name}`);
   });
 
@@ -117,12 +136,12 @@ export async function toggleFixedCostActive(_prev: FormState, formData: FormData
 
 export async function deleteFixedCost(_prev: FormState, formData: FormData): Promise<FormState> {
   const business = await requireOwner();
-  const id = String(formData.get("id") ?? "");
+  const id = text(formData.get("id"));
 
   const res = await run(async () => {
-    const fc = await prisma.fixedCost.findUnique({ where: { id } });
-    if (!fc || fc.businessId !== business.id) throw new Error("Biaya tetap tidak ditemukan.");
-    await prisma.fixedCost.delete({ where: { id } });
+    const fc = await prisma.fixedCost.findFirst({ where: { id, businessId: business.id } });
+    if (!fc) throw new UserError("Biaya tetap tidak ditemukan.");
+    await prisma.fixedCost.delete({ where: { id: fc.id } });
     await logActivity(business.id, "fixedcost.delete", `Hapus biaya tetap ${fc.name}`);
   });
 

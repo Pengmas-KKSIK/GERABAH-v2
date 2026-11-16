@@ -36,12 +36,12 @@ export function InvoiceActions({ url, filename }: { url: string; filename: strin
         Unduh PDF
       </a>
       {canShare ? (
-        <button onClick={share} disabled={sharing} className="btn btn-primary disabled:opacity-60">
+        <button onClick={share} disabled={sharing} className="btn btn-secondary disabled:opacity-60">
           <IconShare className="h-[18px] w-[18px]" />
           {sharing ? "Menyiapkan…" : "Kirim"}
         </button>
       ) : (
-        <a href={url} target="_blank" rel="noreferrer" className="btn btn-primary">
+        <a href={url} target="_blank" rel="noreferrer" className="btn btn-secondary">
           <IconShare className="h-[18px] w-[18px]" />
           Buka Invoice
         </a>

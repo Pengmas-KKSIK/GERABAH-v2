@@ -1,31 +1,14 @@
+import { cache } from "react";
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
 
-export async function getCurrentUser() {
-  const session = await getSession();
-  if (!session) return null;
-  return prisma.user.findUnique({ where: { id: session.userId } });
-}
-
-/** Business milik user — sebagai owner, atau sebagai staf yang ditautkan. */
-export async function getCurrentBusiness() {
-  const session = await getSession();
-  if (!session) return null;
-
-  const owned = await prisma.business.findFirst({ where: { ownerId: session.userId } });
-  if (owned) return owned;
-
-  const user = await prisma.user.findUnique({ where: { id: session.userId } });
-  if (user?.memberOfBusinessId) {
-    return prisma.business.findUnique({ where: { id: user.memberOfBusinessId } });
-  }
-  return null;
-}
-
 export type Role = "owner" | "staff";
 
-/** User + business + peran dalam satu panggilan. */
-export async function getSessionContext() {
+/**
+ * User + usaha + peran untuk request ini (null kalau belum login atau akunnya sudah dihapus).
+ * Dibungkus `cache` supaya layout, halaman, dan helper dalam satu render hanya query sekali.
+ */
+export const getSessionContext = cache(async () => {
   const session = await getSession();
   if (!session) return null;
 
@@ -40,4 +23,13 @@ export async function getSessionContext() {
     if (business) return { user, business, role: "staff" as Role };
   }
   return { user, business: null, role: "owner" as Role };
+});
+
+export async function getCurrentUser() {
+  return (await getSessionContext())?.user ?? null;
+}
+
+/** Usaha milik user — sebagai owner, atau sebagai staf yang ditautkan. */
+export async function getCurrentBusiness() {
+  return (await getSessionContext())?.business ?? null;
 }

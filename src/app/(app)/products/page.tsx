@@ -2,18 +2,16 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { getCurrentBusiness } from "@/lib/current-user";
 import { formatIDR } from "@/lib/format";
-import { Card, EmptyState, List, Row, Badge, Callout } from "@/components/ui";
+import { matchesQuery, queryParam } from "@/lib/search";
+import { Hero, HeroNote, EmptyState, List, Row, Badge, ProductThumb } from "@/components/ui";
+import { PageHeader } from "@/components/page-header";
 import { Segmented } from "@/components/segmented";
+import { SearchBox } from "@/components/search-box";
 import { IconBox, IconPlus } from "@/components/icons";
 
-const TABS = [
-  { key: "active", label: "Aktif", href: "/products" },
-  { key: "low", label: "Stok Menipis", href: "/products?filter=low" },
-  { key: "archived", label: "Arsip", href: "/products?filter=archived" },
-];
-
 export default async function ProductsPage({ searchParams }: PageProps<"/products">) {
-  const { filter } = await searchParams;
+  const sp = await searchParams;
+  const q = queryParam(sp.q);
   const business = await getCurrentBusiness();
   if (!business) return null;
 
@@ -23,46 +21,66 @@ export default async function ProductsPage({ searchParams }: PageProps<"/product
     orderBy: { createdAt: "desc" },
   });
 
-  const active = filter === "archived" ? "archived" : filter === "low" ? "low" : "active";
+  const active = sp.filter === "archived" ? "archived" : sp.filter === "low" ? "low" : "active";
+  const qs = q ? `&q=${encodeURIComponent(q)}` : "";
+  const TABS = [
+    { key: "active", label: "Aktif", href: `/products?filter=active${qs}` },
+    { key: "low", label: "Stok Menipis", href: `/products?filter=low${qs}` },
+    { key: "archived", label: "Arsip", href: `/products?filter=archived${qs}` },
+  ];
+
   const shown = products.filter((p) => {
+    if (!matchesQuery(q, p.name, p.category?.name, p.material)) return false;
     if (active === "archived") return p.status === "inactive";
     if (active === "low") return p.status !== "inactive" && p.stock <= p.minStock;
     return p.status !== "inactive";
   });
 
-  const totalStockValue = products
-    .filter((p) => p.status !== "inactive")
-    .reduce((s, p) => s + p.stock * p.sellingPrice, 0);
+  const live = products.filter((p) => p.status !== "inactive");
+  const totalStockValue = live.reduce((s, p) => s + p.stock * p.sellingPrice, 0);
+  const totalUnits = live.reduce((s, p) => s + p.stock, 0);
 
   return (
     <>
-      <header className="mb-5 flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-[25px] font-bold text-ink">Produk</h1>
-          <p className="mt-0.5 text-[14px] text-ink-2">Katalog, stok, dan untung per barang</p>
+      <PageHeader
+        title="Produk"
+        subtitle="Katalog, stok, dan untung per barang"
+        action={
+          <Link href="/products/new" className="btn btn-primary btn-sm">
+            <IconPlus className="h-4 w-4" strokeWidth={2.4} />
+            Tambah
+          </Link>
+        }
+      />
+
+      {products.length > 0 && (
+        <Hero label="Nilai stok (harga jual)" value={formatIDR(totalStockValue)} className="!mb-5">
+          <HeroNote>
+            {live.length} produk aktif · {totalUnits.toLocaleString("id-ID")} barang di gudang
+          </HeroNote>
+        </Hero>
+      )}
+
+      {products.length > 0 && (
+        <div className="mb-3">
+          <SearchBox placeholder="Cari nama produk…" />
         </div>
-        <Link href="/products/new" className="btn btn-primary !min-h-[44px] !px-4">
-          <IconPlus className="h-4 w-4" strokeWidth={2.4} />
-          Baru
-        </Link>
-      </header>
-
-      <Card className="mb-4">
-        <p className="label">Nilai Stok (harga jual)</p>
-        <p className="figure mt-1.5 text-[26px] text-ink">{formatIDR(totalStockValue)}</p>
-      </Card>
-
+      )}
       <div className="mb-4">
-        <Segmented options={TABS} active={active} />
+        <Segmented label="Tampilkan produk" options={TABS} active={active} />
       </div>
 
       {shown.length === 0 ? (
         <EmptyState
-          icon={<IconBox className="h-6 w-6" strokeWidth={1.7} />}
-          title={active === "active" ? "Belum ada produk" : "Tidak ada produk di sini"}
-          body="Tambahkan produk beserta biaya produksinya, supaya untung dan margin tiap barang dihitung otomatis."
-          actionLabel={active === "active" ? "Tambah Produk" : undefined}
-          actionHref={active === "active" ? "/products/new" : undefined}
+          icon={<IconBox className="h-6 w-6" strokeWidth={1.8} />}
+          title={q ? `Tidak ada produk "${q}"` : active === "active" ? "Belum ada produk" : "Tidak ada produk di sini"}
+          body={
+            q
+              ? "Coba kata lain, atau periksa tab Stok Menipis dan Arsip."
+              : "Tambahkan produk beserta biaya produksinya, supaya untung tiap barang dihitung otomatis."
+          }
+          actionLabel={active === "active" && !q ? "Tambah Produk" : undefined}
+          actionHref={active === "active" && !q ? "/products/new" : undefined}
         />
       ) : (
         <List>
@@ -74,43 +92,30 @@ export default async function ProductsPage({ searchParams }: PageProps<"/product
               <Row
                 key={p.id}
                 href={`/products/${p.id}`}
-                leading={
-                  p.photoUrl ? (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={p.photoUrl} alt="" className="h-11 w-11 shrink-0 rounded-[10px] object-cover" />
-                  ) : (
-                    <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] bg-surface-2 text-ink-3">
-                      <IconBox className="h-5 w-5" strokeWidth={1.7} />
-                    </span>
-                  )
-                }
+                leading={<ProductThumb name={p.name} photoUrl={p.photoUrl} size={72} />}
                 title={p.name}
                 meta={
                   <>
-                    {formatIDR(p.sellingPrice)}
-                    {cost > 0 && <> · untung {formatIDR(profit)}</>}
+                    <span className="tnum block text-[16px] font-semibold text-ink">
+                      {formatIDR(p.sellingPrice)}
+                      {p.stock > 0 && !low && <span className="ml-2 text-[15px] font-medium text-ink-2">Stok {p.stock}</span>}
+                    </span>
+                    {cost > 0 && <span className="tnum block">Untung {formatIDR(profit)}</span>}
                   </>
                 }
-                trailing={
-                  low ? (
-                    <Badge tone="warn">Stok {p.stock}</Badge>
-                  ) : (
-                    <span className="tnum shrink-0 text-[13px] font-medium text-ink-3">Stok {p.stock}</span>
-                  )
+                status={
+                  p.stock <= 0 ? (
+                    <Badge tone="bad">Habis</Badge>
+                  ) : low ? (
+                    <Badge tone="warn">Stok tinggal {p.stock}</Badge>
+                  ) : undefined
                 }
-                chevron={false}
               />
             );
           })}
         </List>
       )}
 
-      <div className="mt-6">
-        <Callout>
-          Isi biaya produksi selengkap mungkin (bahan, tenaga kerja, kemasan). Dari situ aplikasi tahu apakah harga
-          jualmu sudah untung.
-        </Callout>
-      </div>
     </>
   );
 }

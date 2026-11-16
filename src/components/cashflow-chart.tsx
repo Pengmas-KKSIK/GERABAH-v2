@@ -5,72 +5,79 @@ import { formatIDR, formatIDRCompact } from "@/lib/format";
 
 export type ChartBucket = { label: string; fullLabel: string; income: number; expense: number };
 
+/**
+ * Batang berpasangan uang masuk (teal) dan keluar (tanah liat) per periode.
+ * Warna tidak berdiri sendiri: legenda, ringkasan teks, dan nama tiap batang ikut menjelaskan.
+ */
 export function CashflowChart({ buckets, windowLabel }: { buckets: ChartBucket[]; windowLabel: string }) {
   const [active, setActive] = useState<number | null>(null);
   const max = Math.max(1, ...buckets.map((b) => Math.max(b.income, b.expense)));
   const shown = active != null ? buckets[active] : null;
 
   return (
-    <div className="card p-4">
-      <div className="mb-3 flex items-baseline justify-between">
-        <p className="label">Uang Masuk vs Keluar</p>
-        <p className="text-[11.5px] text-ink-3">{windowLabel}</p>
+    <section className="card p-4" aria-labelledby="chart-title">
+      <div className="mb-4 flex items-baseline justify-between gap-3">
+        <h2 id="chart-title" className="text-[19px] font-bold text-ink">
+          Uang masuk dan keluar
+        </h2>
+        <p className="text-[14px] text-ink-2">{windowLabel}</p>
       </div>
 
-      <div className="flex items-end gap-1.5" style={{ height: 108 }}>
+      <div className="flex items-end gap-1.5 border-b border-line-strong" style={{ height: 144 }}>
         {buckets.map((b, i) => (
           <button
             key={i}
             type="button"
             onClick={() => setActive(active === i ? null : i)}
-            className="group flex flex-1 flex-col items-center justify-end gap-1"
-            style={{ height: "100%" }}
+            aria-pressed={active === i}
+            aria-label={`${b.fullLabel}: masuk ${formatIDR(b.income)}, keluar ${formatIDR(b.expense)}`}
+            className="flex h-full flex-1 items-end justify-center gap-[3px] rounded-t-[4px] transition-colors hover:bg-canvas"
           >
-            <span className="flex w-full items-end justify-center gap-[3px]" style={{ height: "100%" }}>
-              <span
-                className={`w-full max-w-[10px] rounded-t-[3px] transition-colors ${
-                  active === i ? "bg-teal" : "bg-teal/45"
-                }`}
-                style={{ height: `${Math.max((b.income / max) * 100, b.income > 0 ? 4 : 0)}%` }}
-              />
-              <span
-                className={`w-full max-w-[10px] rounded-t-[3px] transition-colors ${
-                  active === i ? "bg-clay" : "bg-clay/40"
-                }`}
-                style={{ height: `${Math.max((b.expense / max) * 100, b.expense > 0 ? 4 : 0)}%` }}
-              />
-            </span>
-            <span className={`text-[10px] ${active === i ? "font-semibold text-ink" : "text-ink-3"}`}>
-              {b.label}
-            </span>
+            <span
+              className={`w-full max-w-[22px] rounded-t-[6px] ${active === null || active === i ? "bg-chart-in" : "bg-chart-in/35"}`}
+              style={{ height: `${Math.max((b.income / max) * 100, b.income > 0 ? 3 : 0)}%` }}
+            />
+            <span
+              className={`w-full max-w-[22px] rounded-t-[6px] ${active === null || active === i ? "bg-chart-out" : "bg-chart-out/35"}`}
+              style={{ height: `${Math.max((b.expense / max) * 100, b.expense > 0 ? 3 : 0)}%` }}
+            />
           </button>
         ))}
       </div>
+      <div className="mt-1.5 flex gap-1.5" aria-hidden>
+        {buckets.map((b, i) => (
+          <span
+            key={i}
+            className={`flex-1 truncate text-center text-[13px] ${active === i ? "font-bold text-ink" : "text-ink-2"}`}
+          >
+            {b.label}
+          </span>
+        ))}
+      </div>
 
-      <div className="mt-3 border-t border-line pt-3">
+      <div className="mt-3 flex min-h-[28px] items-center justify-between gap-3 border-t border-line pt-3 text-[14px]">
         {shown ? (
-          <div className="flex items-center justify-between text-[12.5px]">
+          <>
             <span className="font-semibold text-ink">{shown.fullLabel}</span>
             <span className="flex gap-3">
-              <span className="tnum text-teal">+{formatIDRCompact(shown.income)}</span>
-              <span className="tnum text-clay">−{formatIDRCompact(shown.expense)}</span>
+              <span className="tnum font-bold text-chart-in">+{formatIDRCompact(shown.income)}</span>
+              <span className="tnum font-bold text-clay">−{formatIDRCompact(shown.expense)}</span>
             </span>
-          </div>
+          </>
         ) : (
-          <div className="flex items-center gap-4 text-[12px] text-ink-3">
-            <span className="flex items-center gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-[2px] bg-teal/60" /> Masuk
+          <>
+            <span className="flex items-center gap-4 text-ink-2">
+              <span className="flex items-center gap-1.5">
+                <span className="h-3.5 w-3.5 rounded-[4px] bg-chart-in" aria-hidden /> Masuk
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="h-3.5 w-3.5 rounded-[4px] bg-chart-out" aria-hidden /> Keluar
+              </span>
             </span>
-            <span className="flex items-center gap-1.5">
-              <span className="h-2.5 w-2.5 rounded-[2px] bg-clay/50" /> Keluar
-            </span>
-            <span className="ml-auto">Ketuk batang untuk detail</span>
-          </div>
+            <span className="text-ink-2">Pilih batang untuk rincian</span>
+          </>
         )}
       </div>
-      <span className="sr-only">
-        {buckets.map((b) => `${b.fullLabel}: masuk ${formatIDR(b.income)}, keluar ${formatIDR(b.expense)}. `)}
-      </span>
-    </div>
+    </section>
   );
 }

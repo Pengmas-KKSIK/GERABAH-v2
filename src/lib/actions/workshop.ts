@@ -2,82 +2,61 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { flash } from "@/lib/flash";
 import { prisma } from "@/lib/prisma";
 import { formatIDRPlain } from "@/lib/format";
+import { computeWorkshop } from "@/lib/domain/workshop";
 import {
   type FormState,
+  UserError,
   run,
   requireBusiness,
+  requireContext,
+  requireOwner,
   findOrCreateIncomeCategory,
   findOrCreateExpenseCategory,
   parseAmount,
+  parseDateField,
+  parseGifts,
+  parseIntField,
+  oneOf,
+  text,
   logActivity,
 } from "./_helpers";
-
-type GiftInput = { productId: string; quantity: number; unitCost: number };
-
-function parseGifts(raw: FormDataEntryValue | null): GiftInput[] {
-  try {
-    const arr = JSON.parse(String(raw ?? "[]"));
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .map((x) => ({
-        productId: String(x?.productId ?? ""),
-        quantity: Math.max(0, Math.floor(Number(x?.quantity) || 0)),
-        unitCost: Math.max(0, Math.floor(Number(x?.unitCost) || 0)),
-      }))
-      .filter((x) => x.productId && x.quantity > 0);
-  } catch {
-    return [];
-  }
-}
-
-function compute(gifts: GiftInput[], operationalCost: number, profitMode: string, profitValue: number, participants: number) {
-  const giftCost = gifts.reduce((s, g) => s + g.quantity * g.unitCost, 0);
-  const totalCost = giftCost + operationalCost;
-  const targetProfit = profitMode === "percent" ? Math.round((totalCost * profitValue) / 100) : profitValue;
-  const offerPrice = totalCost + targetProfit;
-  const pricePerPerson = participants > 0 ? Math.round(offerPrice / participants) : 0;
-  return { giftCost, totalCost, targetProfit, offerPrice, pricePerPerson };
-}
 
 export async function createWorkshop(_prev: FormState, formData: FormData): Promise<FormState> {
   const business = await requireBusiness();
   let newId = "";
 
   const res = await run(async () => {
-    const organizer = String(formData.get("organizer") ?? "").trim();
-    const dateValue = String(formData.get("date") ?? "");
-    const participants = Math.max(0, Math.floor(Number(formData.get("participants")) || 0));
+    const organizer = text(formData.get("organizer")).slice(0, 160);
+    const participants = parseIntField(formData.get("participants"));
     const operationalCost = parseAmount(formData.get("operationalCost"));
-    const profitMode = String(formData.get("profitMode") ?? "percent") === "nominal" ? "nominal" : "percent";
+    const profitMode = oneOf(formData.get("profitMode"), ["percent", "nominal"] as const, "percent");
     const profitValue = parseAmount(formData.get("profitValue"));
-    const notes = String(formData.get("notes") ?? "").trim();
+    const notes = text(formData.get("notes"));
     const gifts = parseGifts(formData.get("gifts"));
 
-    if (!organizer) throw new Error("Isi nama instansi / penyelenggara.");
-    if (gifts.length === 0) throw new Error("Pilih minimal satu produk gift.");
+    if (!organizer) throw new UserError("Isi nama instansi / penyelenggara.");
+    if (gifts.length === 0) throw new UserError("Pilih minimal satu produk untuk suvenir.");
 
     const ids = [...new Set(gifts.map((g) => g.productId))];
-    const products = await prisma.product.findMany({ where: { id: { in: ids }, businessId: business.id } });
-    if (products.length !== ids.length) throw new Error("Ada produk yang tidak ditemukan.");
+    const found = await prisma.product.count({ where: { id: { in: ids }, businessId: business.id } });
+    if (found !== ids.length) throw new UserError("Ada produk yang tidak ditemukan.");
 
-    const c = compute(gifts, operationalCost, profitMode, profitValue, participants);
-
+    const c = computeWorkshop(gifts, operationalCost, profitMode, profitValue, participants);
     const ws = await prisma.workshop.create({
       data: {
         businessId: business.id,
         organizer,
-        date: dateValue ? new Date(dateValue) : null,
+        date: parseDateField(formData.get("date")),
         participants,
         operationalCost,
         profitMode,
         profitValue,
-        notes: notes || undefined,
+        notes: notes || null,
         ...c,
-        gifts: {
-          create: gifts.map((g) => ({ productId: g.productId, quantity: g.quantity, unitCost: g.unitCost })),
-        },
+        gifts: { create: gifts },
       },
     });
     newId = ws.id;
@@ -86,17 +65,19 @@ export async function createWorkshop(_prev: FormState, formData: FormData): Prom
 
   if (res.error) return res;
   revalidatePath("/workshop");
+  await flash("Workshop tersimpan");
   redirect(`/workshop/${newId}`);
 }
 
+/** Mencatat uang masuk ke Keuangan — khusus owner (staf tidak boleh mencatat uang masuk). */
 export async function recordWorkshopToFinance(_prev: FormState, formData: FormData): Promise<FormState> {
-  const business = await requireBusiness();
-  const id = String(formData.get("id") ?? "");
+  const business = await requireOwner();
+  const id = text(formData.get("id"));
 
   const res = await run(async () => {
     const ws = await prisma.workshop.findFirst({ where: { id, businessId: business.id } });
-    if (!ws) throw new Error("Workshop tidak ditemukan.");
-    if (ws.status === "recorded") throw new Error("Workshop ini sudah dicatat ke Keuangan.");
+    if (!ws) throw new UserError("Workshop tidak ditemukan.");
+    if (ws.status === "recorded") throw new UserError("Workshop ini sudah dicatat ke Keuangan.");
 
     const [incomeCategoryId, expenseCategoryId] = await Promise.all([
       findOrCreateIncomeCategory(business.id, "Workshop"),
@@ -105,33 +86,24 @@ export async function recordWorkshopToFinance(_prev: FormState, formData: FormDa
     const when = ws.date ?? new Date();
 
     await prisma.$transaction(async (tx) => {
+      // Bersyarat: klik ganda tidak bisa mencatat biaya & pemasukan dua kali.
+      const { count } = await tx.workshop.updateMany({
+        where: { id: ws.id, status: { not: "recorded" } },
+        data: { status: "recorded", recordedAt: new Date() },
+      });
+      if (count === 0) throw new UserError("Workshop ini sudah dicatat ke Keuangan.");
+
+      const base = { businessId: business.id, date: when, relatedWorkshopId: ws.id };
       if (ws.totalCost > 0) {
         await tx.financialTransaction.create({
-          data: {
-            businessId: business.id,
-            type: "EXPENSE",
-            expenseCategoryId: expenseCategoryId ?? undefined,
-            description: `Biaya workshop ${ws.organizer}`,
-            amount: ws.totalCost,
-            date: when,
-            relatedWorkshopId: ws.id,
-          },
+          data: { ...base, type: "EXPENSE", expenseCategoryId, description: `Biaya workshop ${ws.organizer}`, amount: ws.totalCost },
         });
       }
       if (ws.offerPrice > 0) {
         await tx.financialTransaction.create({
-          data: {
-            businessId: business.id,
-            type: "INCOME",
-            incomeCategoryId: incomeCategoryId ?? undefined,
-            description: `Workshop ${ws.organizer}`,
-            amount: ws.offerPrice,
-            date: when,
-            relatedWorkshopId: ws.id,
-          },
+          data: { ...base, type: "INCOME", incomeCategoryId, description: `Workshop ${ws.organizer}`, amount: ws.offerPrice },
         });
       }
-      await tx.workshop.update({ where: { id: ws.id }, data: { status: "recorded", recordedAt: new Date() } });
     });
     await logActivity(
       business.id,
@@ -149,18 +121,20 @@ export async function recordWorkshopToFinance(_prev: FormState, formData: FormDa
 }
 
 export async function deleteWorkshop(_prev: FormState, formData: FormData): Promise<FormState> {
-  const business = await requireBusiness();
-  const id = String(formData.get("id") ?? "");
+  const { business, role } = await requireContext();
+  const id = text(formData.get("id"));
 
   const res = await run(async () => {
     const ws = await prisma.workshop.findFirst({ where: { id, businessId: business.id } });
-    if (!ws) throw new Error("Workshop tidak ditemukan.");
+    if (!ws) throw new UserError("Workshop tidak ditemukan.");
+    if (ws.status === "recorded" && role === "staff") {
+      throw new UserError("Workshop ini sudah tercatat di Keuangan — hanya pemilik yang bisa menghapusnya.");
+    }
 
     await prisma.$transaction(async (tx) => {
       // hapus juga catatan keuangan yang tertaut (kalau sudah dicatat)
-      await tx.financialTransaction.deleteMany({ where: { relatedWorkshopId: id } });
-      await tx.workshopGift.deleteMany({ where: { workshopId: id } });
-      await tx.workshop.delete({ where: { id } });
+      await tx.financialTransaction.deleteMany({ where: { relatedWorkshopId: ws.id } });
+      await tx.workshop.delete({ where: { id: ws.id } }); // gift ikut terhapus (cascade)
     });
     await logActivity(business.id, "workshop.delete", `Hapus workshop ${ws.organizer}`);
   });
@@ -169,5 +143,6 @@ export async function deleteWorkshop(_prev: FormState, formData: FormData): Prom
   revalidatePath("/workshop");
   revalidatePath("/finance");
   revalidatePath("/dashboard");
+  await flash("Workshop dihapus");
   redirect("/workshop");
 }

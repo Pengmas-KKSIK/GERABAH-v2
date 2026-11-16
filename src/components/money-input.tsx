@@ -8,6 +8,7 @@ import { groupDigits } from "@/lib/format";
  * way: the visible input carries the name, the server strips non-digits.
  */
 export function MoneyInput({
+  id: idProp,
   name,
   defaultValue,
   placeholder = "0",
@@ -16,6 +17,7 @@ export function MoneyInput({
   big,
   tone = "ink",
 }: {
+  id?: string;
   name: string;
   defaultValue?: number;
   placeholder?: string;
@@ -25,12 +27,14 @@ export function MoneyInput({
   tone?: "ink" | "in" | "out";
 }) {
   const [value, setValue] = useState(defaultValue ? groupDigits(String(defaultValue)) : "");
-  const id = useId();
+  const autoId = useId();
+  const id = idProp ?? autoId;
   const toneCls = tone === "in" ? "text-teal" : tone === "out" ? "text-clay" : "text-ink";
 
   return (
     <div className="relative">
       <span
+        aria-hidden
         className={`pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 font-semibold text-ink-3 ${
           big ? "text-[22px]" : "text-[15px]"
         }`}
@@ -48,7 +52,7 @@ export function MoneyInput({
         onChange={(e) => setValue(groupDigits(e.target.value))}
         placeholder={placeholder}
         className={`field tnum font-semibold ${toneCls} ${
-          big ? "!min-h-[68px] !pl-11 !text-[28px]" : "!pl-10"
+          big ? "!min-h-[64px] !pl-12 !text-[28px]" : "!pl-10"
         }`}
       />
     </div>

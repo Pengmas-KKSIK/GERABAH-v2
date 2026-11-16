@@ -11,8 +11,8 @@ export function StockAdjuster({ productId, stock }: { productId: string; stock: 
   return (
     <div className="card p-4">
       <div className="mb-3 flex items-baseline justify-between">
-        <p className="label">Stok Sekarang</p>
-        <p className="figure text-[22px] text-ink">{stock}</p>
+        <h2 className="text-[17px] font-semibold text-ink">Stok sekarang</h2>
+        <p className="figure text-[26px] text-ink" aria-live="polite">{stock}</p>
       </div>
 
       {mode === "quick" ? (
@@ -23,7 +23,8 @@ export function StockAdjuster({ productId, stock }: { productId: string; stock: 
                 key={d}
                 action={adjustProductStock}
                 hidden={{ productId, mode: "delta", value: String(d) }}
-                className="btn btn-secondary !min-h-[44px] !px-0 tnum"
+                className="btn btn-secondary btn-sm !px-0 tnum"
+                ariaLabel={d > 0 ? `Tambah stok ${d}` : `Kurangi stok ${-d}`}
                 pendingLabel="…"
               >
                 {d > 0 ? `+${d}` : d}
@@ -33,7 +34,7 @@ export function StockAdjuster({ productId, stock }: { productId: string; stock: 
           <button
             type="button"
             onClick={() => setMode("set")}
-            className="mt-2.5 text-[12.5px] font-medium text-clay"
+            className="link mt-1 min-h-[44px] text-[15px]"
           >
             Atur jumlah pasti
           </button>
@@ -44,13 +45,18 @@ export function StockAdjuster({ productId, stock }: { productId: string; stock: 
           hidden={{ productId, mode: "set" }}
           className="flex items-end gap-2"
           footer={
-            <SubmitButton className="btn btn-primary shrink-0" pendingLabel="…">
-              Simpan
-            </SubmitButton>
+            <>
+              <SubmitButton className="btn btn-primary shrink-0" pendingLabel="Menyimpan…">
+                Simpan
+              </SubmitButton>
+              <button type="button" onClick={() => setMode("quick")} className="btn btn-ghost shrink-0 !px-3">
+                Batal
+              </button>
+            </>
           }
         >
           <label className="block flex-1">
-            <span className="mb-1.5 block text-[14px] font-medium text-ink-2">Jumlah stok</span>
+            <span className="field-label">Jumlah stok</span>
             <input name="value" type="number" inputMode="numeric" min={0} defaultValue={stock} className="field tnum" autoFocus />
           </label>
         </ActionForm>

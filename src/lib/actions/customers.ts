@@ -2,18 +2,31 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { flash } from "@/lib/flash";
 import { prisma } from "@/lib/prisma";
-import { type FormState, run, requireBusiness, logActivity } from "./_helpers";
+import { CUSTOMER_TYPES } from "@/lib/labels";
+import { type FormState, UserError, run, requireBusiness, oneOf, text, logActivity } from "./_helpers";
 
-function read(formData: FormData) {
-  return {
-    name: String(formData.get("name") ?? "").trim(),
-    phone: String(formData.get("phone") ?? "").trim(),
-    email: String(formData.get("email") ?? "").trim(),
-    address: String(formData.get("address") ?? "").trim(),
-    type: String(formData.get("type") ?? "New"),
-    notes: String(formData.get("notes") ?? "").trim(),
+function readCustomer(formData: FormData) {
+  const d = {
+    name: text(formData.get("name")).slice(0, 120),
+    phone: text(formData.get("phone")).slice(0, 30),
+    email: text(formData.get("email")).slice(0, 120),
+    address: text(formData.get("address")).slice(0, 300),
+    type: oneOf(formData.get("type"), CUSTOMER_TYPES, "New"),
+    notes: text(formData.get("notes")),
   };
+  if (!d.name) throw new UserError("Nama pelanggan wajib diisi.");
+  return d;
+}
+
+/** Satu nomor HP hanya untuk satu pelanggan per usaha (supaya pengingat WA tidak salah orang). */
+async function assertPhoneFree(businessId: string, phone: string, exceptId?: string) {
+  if (!phone) return;
+  const existing = await prisma.customer.findFirst({
+    where: { businessId, phone, ...(exceptId ? { id: { not: exceptId } } : {}) },
+  });
+  if (existing) throw new UserError(`Nomor ini sudah terdaftar atas nama ${existing.name}.`);
 }
 
 export async function createCustomer(_prev: FormState, formData: FormData): Promise<FormState> {
@@ -21,21 +34,17 @@ export async function createCustomer(_prev: FormState, formData: FormData): Prom
   let newId = "";
 
   const res = await run(async () => {
-    const d = read(formData);
-    if (!d.name) throw new Error("Nama pelanggan wajib diisi.");
-    if (d.phone) {
-      const existing = await prisma.customer.findFirst({ where: { businessId: business.id, phone: d.phone } });
-      if (existing) throw new Error(`Nomor ini sudah terdaftar atas nama ${existing.name}.`);
-    }
+    const d = readCustomer(formData);
+    await assertPhoneFree(business.id, d.phone);
     const customer = await prisma.customer.create({
       data: {
         businessId: business.id,
         name: d.name,
-        phone: d.phone || undefined,
-        email: d.email || undefined,
-        address: d.address || undefined,
+        phone: d.phone || null,
+        email: d.email || null,
+        address: d.address || null,
         type: d.type,
-        notes: d.notes || undefined,
+        notes: d.notes || null,
       },
     });
     newId = customer.id;
@@ -44,20 +53,21 @@ export async function createCustomer(_prev: FormState, formData: FormData): Prom
 
   if (res.error) return res;
   revalidatePath("/customers");
+  await flash("Pelanggan ditambahkan");
   redirect(`/customers/${newId}`);
 }
 
 export async function updateCustomer(_prev: FormState, formData: FormData): Promise<FormState> {
   const business = await requireBusiness();
-  const id = String(formData.get("id") ?? "");
+  const id = text(formData.get("id"));
 
   const res = await run(async () => {
-    const customer = await prisma.customer.findUnique({ where: { id } });
-    if (!customer || customer.businessId !== business.id) throw new Error("Pelanggan tidak ditemukan.");
-    const d = read(formData);
-    if (!d.name) throw new Error("Nama pelanggan wajib diisi.");
+    const customer = await prisma.customer.findFirst({ where: { id, businessId: business.id } });
+    if (!customer) throw new UserError("Pelanggan tidak ditemukan.");
+    const d = readCustomer(formData);
+    await assertPhoneFree(business.id, d.phone, customer.id);
     await prisma.customer.update({
-      where: { id },
+      where: { id: customer.id },
       data: {
         name: d.name,
         phone: d.phone || null,
@@ -73,5 +83,6 @@ export async function updateCustomer(_prev: FormState, formData: FormData): Prom
   if (res.error) return res;
   revalidatePath("/customers");
   revalidatePath(`/customers/${id}`);
+  await flash("Data pelanggan diperbarui");
   redirect(`/customers/${id}`);
 }

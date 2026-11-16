@@ -26,7 +26,7 @@ export function ItemsEditor({
     onChange(value.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
 
   const addRow = () => {
-    const p = products[0];
+    const p = (showStock ? products.find((x) => (x.stock ?? 0) > 0) : undefined) ?? products[0];
     onChange([...value, { productId: p?.id ?? "", quantity: 1, unitPrice: p?.sellingPrice ?? 0 }]);
   };
 
@@ -38,20 +38,21 @@ export function ItemsEditor({
         return (
           <Card key={i}>
             <div className="flex flex-col gap-3">
+              <div className="-mb-1 -mt-1 flex min-h-[44px] items-center justify-between">
+                <span className="text-[15px] font-semibold text-ink">Barang {i + 1}</span>
+                {value.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => onChange(value.filter((_, idx) => idx !== i))}
+                    className="icon-btn icon-btn-danger -mr-2.5"
+                    aria-label={`Hapus barang ${i + 1}`}
+                  >
+                    <IconTrash className="h-[18px] w-[18px]" strokeWidth={2} />
+                  </button>
+                )}
+              </div>
               <label className="block">
-                <span className="mb-1.5 flex items-center justify-between text-[14px] font-medium text-ink-2">
-                  Barang {i + 1}
-                  {value.length > 1 && (
-                    <button
-                      type="button"
-                      onClick={() => onChange(value.filter((_, idx) => idx !== i))}
-                      className="inline-flex items-center gap-1 text-[13px] font-medium text-bad"
-                    >
-                      <IconTrash className="h-4 w-4" strokeWidth={2} />
-                      Hapus
-                    </button>
-                  )}
-                </span>
+                <span className="sr-only">Produk</span>
                 <select
                   value={row.productId}
                   onChange={(e) => {
@@ -69,8 +70,9 @@ export function ItemsEditor({
                 </select>
               </label>
 
+              <div className="grid gap-3 min-[420px]:grid-cols-2">
               <div>
-                <span className="mb-1.5 block text-[14px] font-medium text-ink-2">
+                <span className="field-label">
                   Jumlah{showStock && p?.stock != null ? ` (stok ${p.stock})` : ""}
                 </span>
                 <QtyStepper
@@ -81,16 +83,17 @@ export function ItemsEditor({
                 />
               </div>
               <label className="block">
-                <span className="mb-1.5 block text-[14px] font-medium text-ink-2">Harga satuan</span>
+                <span className="field-label">Harga satuan</span>
                 <RpField
                   value={row.unitPrice}
                   onChange={(n) => setRow(i, { unitPrice: n })}
                   placeholder={p ? groupDigits(String(p.sellingPrice)) : "0"}
                 />
               </label>
+              </div>
 
               {over && (
-                <p className="text-[12.5px] font-medium text-bad">
+                <p role="alert" className="text-[14px] font-medium text-bad">
                   Jumlah melebihi stok ({p?.stock}). Kurangi atau tambah stok dulu.
                 </p>
               )}
