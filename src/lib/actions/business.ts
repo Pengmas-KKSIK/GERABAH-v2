@@ -2,28 +2,30 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { flash } from "@/lib/flash";
 import { prisma } from "@/lib/prisma";
-import { getSession } from "@/lib/auth";
-import { getCurrentBusiness } from "@/lib/current-user";
+import { getSessionContext } from "@/lib/current-user";
 import { seedBusinessDefaults } from "@/lib/seed-defaults";
-import { type FormState, run, requireBusiness } from "./_helpers";
+import { type FormState, UserError, run, requireOwner, text } from "./_helpers";
+
+function readBusiness(formData: FormData) {
+  const name = text(formData.get("name")).slice(0, 120);
+  if (!name) throw new UserError("Isi nama usahanya dulu.");
+  return {
+    name,
+    location: text(formData.get("location")).slice(0, 200) || null,
+    description: text(formData.get("description")).slice(0, 500) || null,
+  };
+}
 
 export async function createBusiness(_prev: FormState, formData: FormData): Promise<FormState> {
-  const session = await getSession();
-  if (!session) redirect("/login");
+  const ctx = await getSessionContext();
+  if (!ctx) redirect("/login");
+  if (ctx.user.memberOfBusinessId) redirect("/dashboard"); // staf tidak membuat usaha sendiri
 
   const res = await run(async () => {
-    const name = String(formData.get("name") ?? "").trim();
-    const location = String(formData.get("location") ?? "").trim();
-    const description = String(formData.get("description") ?? "").trim();
-    if (!name) throw new Error("Isi nama usahanya dulu.");
-
-    let business = await getCurrentBusiness();
-    if (!business) {
-      business = await prisma.business.create({
-        data: { ownerId: session.userId, name, location: location || null, description: description || null },
-      });
-    }
+    const data = readBusiness(formData);
+    const business = ctx.business ?? (await prisma.business.create({ data: { ownerId: ctx.user.id, ...data } }));
     // idempotent — aman diulang kalau langkah ini gagal separuh jalan
     await seedBusinessDefaults(business.id);
   });
@@ -34,21 +36,15 @@ export async function createBusiness(_prev: FormState, formData: FormData): Prom
 }
 
 export async function updateBusiness(_prev: FormState, formData: FormData): Promise<FormState> {
-  const business = await requireBusiness();
+  const business = await requireOwner();
 
   const res = await run(async () => {
-    const name = String(formData.get("name") ?? "").trim();
-    const location = String(formData.get("location") ?? "").trim();
-    const description = String(formData.get("description") ?? "").trim();
-    if (!name) throw new Error("Nama usaha wajib diisi.");
-    await prisma.business.update({
-      where: { id: business.id },
-      data: { name, location: location || null, description: description || null },
-    });
+    await prisma.business.update({ where: { id: business.id }, data: readBusiness(formData) });
   });
 
   if (res.error) return res;
   revalidatePath("/settings");
   revalidatePath("/dashboard");
+  await flash("Data usaha disimpan");
   redirect("/settings");
 }

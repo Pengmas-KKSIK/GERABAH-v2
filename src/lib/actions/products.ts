@@ -2,32 +2,29 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { flash } from "@/lib/flash";
 import { prisma } from "@/lib/prisma";
 import { saveUploadedFile } from "@/lib/upload";
 import { formatIDRPlain } from "@/lib/format";
-import { getSessionContext } from "@/lib/current-user";
+import { adjustStock, productStatusForStock } from "@/lib/stock";
+import { productHasHistory } from "@/lib/products";
 import {
   type FormState,
+  UserError,
   run,
   requireBusiness,
+  requireContext,
   requireOwner,
   findOrCreateProductCategory,
   findOrCreateProductOtherCostCategory,
   parseAmount,
+  parseIntField,
   parseMaterials,
+  text,
   logActivity,
 } from "./_helpers";
 
-function readMaterials(formData: FormData) {
-  return parseMaterials(formData.get("materials")).map((m) => ({
-    name: m.name,
-    quantity: m.quantity,
-    unit: m.unit,
-    unitCost: m.unitCost,
-  }));
-}
-
-/** Kemasan + Lain-lain (Bahan Baku sekarang di ProductMaterial, Tenaga Kerja di FixedCost bulanan). */
+/** Kemasan + Lain-lain (Bahan Baku ada di ProductMaterial, Tenaga Kerja di FixedCost bulanan). */
 async function readCostComponents(businessId: string, formData: FormData) {
   const rows: { label: string; amount: number; otherCategoryId?: string }[] = [];
 
@@ -35,15 +32,28 @@ async function readCostComponents(businessId: string, formData: FormData) {
   if (packagingCost > 0) rows.push({ label: "Packaging Cost", amount: packagingCost });
 
   const otherCost = parseAmount(formData.get("otherCost"));
-  const otherCategoryName = String(formData.get("otherCostCategory") ?? "").trim();
   if (otherCost > 0) {
-    const otherCategoryId = otherCategoryName
-      ? await findOrCreateProductOtherCostCategory(businessId, otherCategoryName)
-      : null;
+    const otherCategoryId = await findOrCreateProductOtherCostCategory(businessId, text(formData.get("otherCostCategory")));
     rows.push({ label: "Other Cost", amount: otherCost, otherCategoryId: otherCategoryId ?? undefined });
   }
-
   return rows;
+}
+
+/** Field yang sama di form tambah & ubah produk. */
+function readProductFields(formData: FormData) {
+  const name = text(formData.get("name")).slice(0, 120);
+  if (!name) throw new UserError("Nama produk wajib diisi.");
+  const sellingPrice = parseAmount(formData.get("sellingPrice"));
+  if (sellingPrice <= 0) throw new UserError("Isi harga jualnya dulu.");
+  return {
+    name,
+    sellingPrice,
+    categoryName: text(formData.get("category")),
+    description: text(formData.get("description")) || null,
+    material: text(formData.get("material")) || null,
+    minStock: parseIntField(formData.get("minStock")),
+    materials: parseMaterials(formData.get("materials")),
+  };
 }
 
 export async function createProduct(_prev: FormState, formData: FormData): Promise<FormState> {
@@ -51,77 +61,66 @@ export async function createProduct(_prev: FormState, formData: FormData): Promi
   let newId = "";
 
   const res = await run(async () => {
-    const name = String(formData.get("name") ?? "").trim();
-    const categoryName = String(formData.get("category") ?? "");
-    const description = String(formData.get("description") ?? "").trim();
-    const material = String(formData.get("material") ?? "").trim();
-    const sellingPrice = parseAmount(formData.get("sellingPrice"));
-    const stock = Number(formData.get("stock") ?? 0) || 0;
-    const minStock = Number(formData.get("minStock") ?? 0) || 0;
-    const photoFile = formData.get("photo") as File | null;
-
-    if (!name) throw new Error("Nama produk wajib diisi.");
-    if (sellingPrice <= 0) throw new Error("Isi harga jualnya dulu.");
-
-    const categoryId = categoryName ? await findOrCreateProductCategory(business.id, categoryName) : null;
-    const photoUrl = await saveUploadedFile(photoFile);
-    const costComponents = await readCostComponents(business.id, formData);
-    const materials = readMaterials(formData);
+    const f = readProductFields(formData);
+    const stock = parseIntField(formData.get("stock"));
+    const [categoryId, photoUrl, costComponents] = await Promise.all([
+      findOrCreateProductCategory(business.id, f.categoryName),
+      saveUploadedFile(formData.get("photo") as File | null),
+      readCostComponents(business.id, formData),
+    ]);
 
     const product = await prisma.product.create({
       data: {
         businessId: business.id,
-        name,
-        categoryId: categoryId ?? undefined,
-        description: description || undefined,
-        material: material || undefined,
-        sellingPrice,
+        name: f.name,
+        categoryId,
+        description: f.description,
+        material: f.material,
+        sellingPrice: f.sellingPrice,
         stock,
-        minStock,
-        photoUrl: photoUrl || undefined,
-        status: stock > 0 ? "active" : "out_of_stock",
+        minStock: f.minStock,
+        photoUrl,
+        status: productStatusForStock("active", stock),
         costComponents: { create: costComponents },
-        materials: { create: materials },
+        materials: { create: f.materials },
       },
     });
     newId = product.id;
-    await logActivity(business.id, "product.create", `Tambah produk ${name} (harga ${formatIDRPlain(sellingPrice)}, stok ${stock})`);
+    await logActivity(
+      business.id,
+      "product.create",
+      `Tambah produk ${f.name} (harga ${formatIDRPlain(f.sellingPrice)}, stok ${stock})`
+    );
   });
 
   if (res.error) return res;
   revalidatePath("/products");
+  await flash("Produk ditambahkan");
   redirect(`/products/${newId}`);
 }
 
 export async function updateProduct(_prev: FormState, formData: FormData): Promise<FormState> {
-  const business = await requireBusiness();
-  const id = String(formData.get("id") ?? "");
-  const ctx = await getSessionContext();
+  const { business, role, user } = await requireContext();
+  const id = text(formData.get("id"));
+  let sentForApproval = false;
 
   const res = await run(async () => {
-    const product = await prisma.product.findUnique({ where: { id } });
-    if (!product || product.businessId !== business.id) throw new Error("Produk tidak ditemukan.");
+    const product = await prisma.product.findFirst({ where: { id, businessId: business.id } });
+    if (!product) throw new UserError("Produk tidak ditemukan.");
 
-    const name = String(formData.get("name") ?? "").trim();
-    const categoryName = String(formData.get("category") ?? "");
-    const description = String(formData.get("description") ?? "").trim();
-    const material = String(formData.get("material") ?? "").trim();
-    const submittedPrice = parseAmount(formData.get("sellingPrice"));
-    const minStock = Number(formData.get("minStock") ?? 0) || 0;
-    const photoFile = formData.get("photo") as File | null;
-    const priceChanged = submittedPrice !== product.sellingPrice;
-    // Staf yang mengubah harga jual butuh persetujuan owner dulu — harga lama dipertahankan
-    // sampai disetujui (lihat docs/EVALUASI-DAN-RENCANA-PENGEMBANGAN.md §10.2.5).
-    const needsApproval = priceChanged && ctx?.role === "staff";
-    const sellingPrice = needsApproval ? product.sellingPrice : submittedPrice;
+    const f = readProductFields(formData);
+    const priceChanged = f.sellingPrice !== product.sellingPrice;
+    // Staf yang mengubah harga jual butuh persetujuan owner — harga lama dipakai sampai disetujui.
+    const needsApproval = priceChanged && role === "staff";
+    sentForApproval = needsApproval;
+    const removePhoto = text(formData.get("removePhoto")) === "1";
 
-    if (!name) throw new Error("Nama produk wajib diisi.");
-    if (submittedPrice <= 0) throw new Error("Isi harga jualnya dulu.");
-
-    const categoryId = categoryName ? await findOrCreateProductCategory(business.id, categoryName) : null;
-    const photoUrl = await saveUploadedFile(photoFile);
-    const costComponents = await readCostComponents(business.id, formData);
-    const materials = readMaterials(formData);
+    const [categoryId, uploadedUrl, costComponents] = await Promise.all([
+      findOrCreateProductCategory(business.id, f.categoryName),
+      saveUploadedFile(formData.get("photo") as File | null),
+      readCostComponents(business.id, formData),
+    ]);
+    const photoUrl = uploadedUrl ?? (removePhoto ? null : product.photoUrl);
 
     await prisma.$transaction(async (tx) => {
       await tx.productCostComponent.deleteMany({ where: { productId: id } });
@@ -129,24 +128,24 @@ export async function updateProduct(_prev: FormState, formData: FormData): Promi
       await tx.product.update({
         where: { id },
         data: {
-          name,
-          categoryId: categoryId ?? null,
-          description: description || null,
-          material: material || null,
-          sellingPrice,
-          minStock,
-          photoUrl: photoUrl ?? undefined,
+          name: f.name,
+          categoryId,
+          description: f.description,
+          material: f.material,
+          sellingPrice: needsApproval ? product.sellingPrice : f.sellingPrice,
+          minStock: f.minStock,
+          photoUrl,
           costComponents: { create: costComponents },
-          materials: { create: materials },
+          materials: { create: f.materials },
         },
       });
 
       if (needsApproval) {
-        const existingPending = await tx.productChangeRequest.findFirst({
+        const pending = await tx.productChangeRequest.findFirst({
           where: { productId: id, field: "sellingPrice", status: "pending" },
         });
-        if (existingPending) {
-          await tx.productChangeRequest.update({ where: { id: existingPending.id }, data: { newValue: submittedPrice } });
+        if (pending) {
+          await tx.productChangeRequest.update({ where: { id: pending.id }, data: { newValue: f.sellingPrice } });
         } else {
           await tx.productChangeRequest.create({
             data: {
@@ -154,9 +153,9 @@ export async function updateProduct(_prev: FormState, formData: FormData): Promi
               productId: id,
               field: "sellingPrice",
               oldValue: product.sellingPrice,
-              newValue: submittedPrice,
-              requestedById: ctx?.user.id,
-              requestedByName: ctx?.user.name ?? "Staf",
+              newValue: f.sellingPrice,
+              requestedById: user.id,
+              requestedByName: user.name,
             },
           });
         }
@@ -167,10 +166,10 @@ export async function updateProduct(_prev: FormState, formData: FormData): Promi
       business.id,
       "product.update",
       needsApproval
-        ? `Ajukan perubahan harga ${name}: ${formatIDRPlain(product.sellingPrice)} → ${formatIDRPlain(submittedPrice)} (menunggu persetujuan owner)`
+        ? `Ajukan perubahan harga ${f.name}: ${formatIDRPlain(product.sellingPrice)} → ${formatIDRPlain(f.sellingPrice)} (menunggu persetujuan pemilik)`
         : priceChanged
-          ? `Ubah produk ${name} — harga jual ${formatIDRPlain(product.sellingPrice)} → ${formatIDRPlain(sellingPrice)}`
-          : `Ubah data produk ${name}`
+          ? `Ubah produk ${f.name} — harga jual ${formatIDRPlain(product.sellingPrice)} → ${formatIDRPlain(f.sellingPrice)}`
+          : `Ubah data produk ${f.name}`
     );
   });
 
@@ -178,27 +177,37 @@ export async function updateProduct(_prev: FormState, formData: FormData): Promi
   revalidatePath("/products");
   revalidatePath(`/products/${id}`);
   revalidatePath("/approvals");
+  await flash(sentForApproval ? "Harga baru dikirim ke pemilik untuk disetujui" : "Produk diperbarui");
   redirect(`/products/${id}`);
+}
+
+/** Pengajuan perubahan harga milik usaha ini. Status "pending" dicek atomik saat diproses. */
+async function findChangeRequest(businessId: string, requestId: string) {
+  const req = await prisma.productChangeRequest.findFirst({
+    where: { id: requestId, businessId },
+    include: { product: true },
+  });
+  if (!req) throw new UserError("Pengajuan tidak ditemukan.");
+  return req;
 }
 
 export async function approveProductChange(_prev: FormState, formData: FormData): Promise<FormState> {
   const business = await requireOwner();
-  const requestId = String(formData.get("requestId") ?? "");
+  const requestId = text(formData.get("requestId"));
   let productId = "";
 
   const res = await run(async () => {
-    const req = await prisma.productChangeRequest.findUnique({ where: { id: requestId }, include: { product: true } });
-    if (!req || req.businessId !== business.id) throw new Error("Pengajuan tidak ditemukan.");
-    if (req.status !== "pending") throw new Error("Pengajuan ini sudah diproses.");
+    const req = await findChangeRequest(business.id, requestId);
     productId = req.productId;
 
-    await prisma.$transaction([
-      prisma.product.update({ where: { id: req.productId }, data: { sellingPrice: req.newValue } }),
-      prisma.productChangeRequest.update({
-        where: { id: req.id },
+    await prisma.$transaction(async (tx) => {
+      const { count } = await tx.productChangeRequest.updateMany({
+        where: { id: req.id, status: "pending" },
         data: { status: "approved", reviewedAt: new Date() },
-      }),
-    ]);
+      });
+      if (count === 0) throw new UserError("Pengajuan ini sudah diproses.");
+      await tx.product.update({ where: { id: req.productId }, data: { sellingPrice: req.newValue } });
+    });
     await logActivity(
       business.id,
       "product.approve_price",
@@ -215,18 +224,16 @@ export async function approveProductChange(_prev: FormState, formData: FormData)
 
 export async function rejectProductChange(_prev: FormState, formData: FormData): Promise<FormState> {
   const business = await requireOwner();
-  const requestId = String(formData.get("requestId") ?? "");
-  const note = String(formData.get("reviewNote") ?? "").trim();
+  const requestId = text(formData.get("requestId"));
+  const note = text(formData.get("reviewNote")).slice(0, 500);
 
   const res = await run(async () => {
-    const req = await prisma.productChangeRequest.findUnique({ where: { id: requestId }, include: { product: true } });
-    if (!req || req.businessId !== business.id) throw new Error("Pengajuan tidak ditemukan.");
-    if (req.status !== "pending") throw new Error("Pengajuan ini sudah diproses.");
-
-    await prisma.productChangeRequest.update({
-      where: { id: req.id },
+    const req = await findChangeRequest(business.id, requestId);
+    const { count } = await prisma.productChangeRequest.updateMany({
+      where: { id: req.id, status: "pending" },
       data: { status: "rejected", reviewedAt: new Date(), reviewNote: note || null },
     });
+    if (count === 0) throw new UserError("Pengajuan ini sudah diproses.");
     await logActivity(
       business.id,
       "product.reject_price",
@@ -242,79 +249,71 @@ export async function rejectProductChange(_prev: FormState, formData: FormData):
 
 export async function adjustProductStock(_prev: FormState, formData: FormData): Promise<FormState> {
   const business = await requireBusiness();
+  const productId = text(formData.get("productId"));
 
   const res = await run(async () => {
-    const productId = String(formData.get("productId") ?? "");
-    const mode = String(formData.get("mode") ?? "delta");
-    const value = Number(formData.get("value") ?? 0) || 0;
-    if (!productId) throw new Error("Produk tidak ditemukan.");
+    const product = await prisma.product.findFirst({ where: { id: productId, businessId: business.id } });
+    if (!product) throw new UserError("Produk tidak ditemukan.");
 
-    const product = await prisma.product.findUnique({ where: { id: productId } });
-    if (!product || product.businessId !== business.id) throw new Error("Produk tidak ditemukan.");
-
-    const newStock = mode === "set" ? Math.max(value, 0) : Math.max(product.stock + value, 0);
-    await prisma.product.update({
-      where: { id: productId },
-      data: {
-        stock: newStock,
-        status: product.status === "inactive" ? "inactive" : newStock <= 0 ? "out_of_stock" : "active",
-      },
-    });
+    const setMode = text(formData.get("mode")) === "set";
+    const value = parseIntField(formData.get("value"), setMode ? {} : { min: -1_000_000, max: 1_000_000 });
+    const { previous, product: after } = await prisma.$transaction((tx) =>
+      adjustStock(tx, product.id, setMode ? { set: value } : { delta: value })
+    );
     await logActivity(
       business.id,
       "stock.adjust",
-      `Sesuaikan stok ${product.name}: ${product.stock} → ${newStock}`
+      `Sesuaikan stok ${product.name}: ${previous ?? product.stock} → ${after.stock}`
     );
-    revalidatePath("/products");
-    revalidatePath(`/products/${productId}`);
-  });
-
-  return res;
-}
-
-export async function productHasHistory(productId: string) {
-  const [s, o] = await Promise.all([
-    prisma.saleItem.count({ where: { productId } }),
-    prisma.orderItem.count({ where: { productId } }),
-  ]);
-  return s > 0 || o > 0;
-}
-
-export async function deleteProduct(_prev: FormState, formData: FormData): Promise<FormState> {
-  const business = await requireBusiness();
-  const productId = String(formData.get("id") ?? "");
-
-  const res = await run(async () => {
-    const product = await prisma.product.findUnique({ where: { id: productId } });
-    if (!product || product.businessId !== business.id) throw new Error("Produk tidak ditemukan.");
-
-    if (await productHasHistory(productId)) {
-      await prisma.product.update({ where: { id: productId }, data: { status: "inactive" } });
-    } else {
-      await prisma.product.delete({ where: { id: productId } });
-    }
-    await logActivity(business.id, "product.delete", `Arsipkan/hapus produk ${product.name}`);
   });
 
   if (res.error) return res;
   revalidatePath("/products");
+  revalidatePath(`/products/${productId}`);
+  return res;
+}
+
+export async function deleteProduct(_prev: FormState, formData: FormData): Promise<FormState> {
+  const business = await requireBusiness();
+  const productId = text(formData.get("id"));
+  let archived = false;
+
+  const res = await run(async () => {
+    const product = await prisma.product.findFirst({ where: { id: productId, businessId: business.id } });
+    if (!product) throw new UserError("Produk tidak ditemukan.");
+
+    const archive = await productHasHistory(product.id);
+    archived = archive;
+    if (archive) {
+      await prisma.product.update({ where: { id: product.id }, data: { status: "inactive" } });
+    } else {
+      await prisma.product.delete({ where: { id: product.id } });
+    }
+    await logActivity(business.id, "product.delete", `${archive ? "Arsipkan" : "Hapus"} produk ${product.name}`);
+  });
+
+  if (res.error) return res;
+  revalidatePath("/products");
+  await flash(archived ? "Produk dipindah ke Arsip (sudah punya riwayat)" : "Produk dihapus");
   redirect("/products");
 }
 
 export async function restoreProduct(_prev: FormState, formData: FormData): Promise<FormState> {
   const business = await requireBusiness();
-  const productId = String(formData.get("id") ?? "");
+  const productId = text(formData.get("id"));
 
   const res = await run(async () => {
-    const product = await prisma.product.findUnique({ where: { id: productId } });
-    if (!product || product.businessId !== business.id) throw new Error("Produk tidak ditemukan.");
+    const product = await prisma.product.findFirst({ where: { id: productId, businessId: business.id } });
+    if (!product) throw new UserError("Produk tidak ditemukan.");
     await prisma.product.update({
-      where: { id: productId },
-      data: { status: product.stock > 0 ? "active" : "out_of_stock" },
+      where: { id: product.id },
+      data: { status: productStatusForStock("active", product.stock) },
     });
-    revalidatePath("/products");
-    revalidatePath(`/products/${productId}`);
+    await logActivity(business.id, "product.restore", `Aktifkan kembali produk ${product.name}`);
   });
 
+  if (res.error) return res;
+  revalidatePath("/products");
+  revalidatePath(`/products/${productId}`);
   return res;
 }

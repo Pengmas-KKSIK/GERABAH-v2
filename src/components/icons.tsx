@@ -168,13 +168,6 @@ export const IconCamera = (p: P) => (
   </Icon>
 );
 
-export const IconSpark = (p: P) => (
-  <Icon {...p}>
-    <path d="M12 3v4M12 17v4M3 12h4M17 12h4" />
-    <path d="M12 8a4 4 0 0 0 4 4 4 4 0 0 0-4 4 4 4 0 0 0-4-4 4 4 0 0 0 4-4Z" />
-  </Icon>
-);
-
 export const IconAlert = (p: P) => (
   <Icon {...p}>
     <path d="M12 4 2.5 20h19L12 4Z" />
@@ -257,5 +250,80 @@ export const IconClipboardCheck = (p: P) => (
     <rect x="5" y="4" width="14" height="17" rx="2" />
     <path d="M9 4a3 3 0 0 1 6 0" />
     <path d="m9 13 2 2 4-4.5" />
+  </Icon>
+);
+
+export const IconMenu = (p: P) => (
+  <Icon {...p}>
+    <path d="M4 7h16M4 12h16M4 17h16" />
+  </Icon>
+);
+
+export const IconHourglass = (p: P) => (
+  <Icon {...p}>
+    <path d="M6 3h12M6 21h12" />
+    <path d="M7 3c0 4 5 5.5 5 9s-5 5-5 9" />
+    <path d="M17 3c0 4-5 5.5-5 9s5 5 5 9" />
+  </Icon>
+);
+
+export const IconInfo = (p: P) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 11v5" />
+    <path d="M12 7.5h.01" />
+  </Icon>
+);
+
+export const IconX = (p: P) => (
+  <Icon {...p}>
+    <path d="M6 6l12 12M18 6 6 18" />
+  </Icon>
+);
+
+export const IconChevronDown = (p: P) => (
+  <Icon {...p}>
+    <path d="m6 9 6 6 6-6" />
+  </Icon>
+);
+
+export const IconFlame = (p: P) => (
+  <Icon {...p}>
+    <path d="M12 3c1 3.2 5 5.2 5 10a5 5 0 0 1-10 0c0-2 1-3.2 2.2-4.2.1 1.8.9 2.7 1.8 2.9C10.3 8 10.5 5.5 12 3z" />
+  </Icon>
+);
+
+export const IconCalendar = (p: P) => (
+  <Icon {...p}>
+    <rect x="4" y="5.5" width="16" height="14.5" rx="2.5" />
+    <path d="M4 10h16M8.5 3.5v4M15.5 3.5v4" />
+  </Icon>
+);
+
+export const IconPhone = (p: P) => (
+  <Icon {...p}>
+    <rect x="7" y="3" width="10" height="18" rx="2.5" />
+    <path d="M11 18h2" />
+  </Icon>
+);
+
+export const IconCheckCircle = (p: P) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="m8.5 12.5 2.5 2.5 4.5-5" />
+  </Icon>
+);
+
+export const IconHalfCircle = (p: P) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" />
+  </Icon>
+);
+
+export const IconPlusCircle = (p: P) => (
+  <Icon {...p}>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M12 8v8M8 12h8" />
   </Icon>
 );

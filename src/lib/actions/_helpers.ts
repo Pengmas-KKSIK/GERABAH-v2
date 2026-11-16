@@ -1,58 +1,33 @@
-import { redirect } from "next/navigation";
+/**
+ * Kumpulan helper untuk server action. Bukan file "use server" — tidak ada yang bisa
+ * dipanggil langsung dari browser. Logika murni ada di form-parse.ts & domain/*.
+ */
 import { prisma } from "@/lib/prisma";
 import { getSession } from "@/lib/auth";
-import { getCurrentBusiness } from "@/lib/current-user";
 
-export type FormState = { error?: string; ok?: boolean; message?: string };
-export const OK: FormState = { ok: true };
+export { type FormState, OK, UserError, run } from "@/lib/action-state";
+export { requireBusiness, requireOwner, requireContext } from "@/lib/guards";
+export * from "@/lib/form-parse";
 
-/** Run the mutation body, turning thrown errors into inline form state. */
-export async function run(fn: () => Promise<void>): Promise<FormState> {
-  try {
-    await fn();
-    return { ok: true };
-  } catch (e) {
-    console.error("[action]", e);
-    return { error: e instanceof Error ? e.message : "Terjadi kesalahan. Coba lagi." };
-  }
-}
+type LookupModel = {
+  findFirst: (a: { where: { businessId: string; name: string } }) => Promise<{ id: string } | null>;
+  create: (a: { data: { businessId: string; name: string } }) => Promise<{ id: string }>;
+};
 
-export async function requireBusiness() {
-  const session = await getSession();
-  if (!session) redirect("/login");
-  const business = await getCurrentBusiness();
-  if (!business) redirect("/onboarding");
-  return business;
-}
-
-/** Seperti requireBusiness, tapi menolak staf (halaman/aksi khusus owner). */
-export async function requireOwner() {
-  const session = await getSession();
-  if (!session) redirect("/login");
-  const business = await prisma.business.findFirst({ where: { ownerId: session.userId } });
-  if (!business) {
-    // staf yang ditautkan ke sebuah business → tendang ke dashboard, bukan onboarding
-    const user = await prisma.user.findUnique({ where: { id: session.userId } });
-    if (user?.memberOfBusinessId) redirect("/dashboard");
-    redirect("/onboarding");
-  }
-  return business;
-}
-
-async function findOrCreate(
-  model: {
-    findFirst: (a: { where: { businessId: string; name: string } }) => Promise<{ id: string } | null>;
-    create: (a: { data: { businessId: string; name: string } }) => Promise<{ id: string }>;
-  },
-  businessId: string,
-  name: string
-) {
-  const trimmed = name.trim();
+/** Cari pilihan (kategori, metode bayar, …) berdasarkan nama; buat baru kalau belum ada. */
+async function findOrCreate(model: LookupModel, businessId: string, name: string) {
+  const trimmed = name.trim().slice(0, 80);
   if (!trimmed) return null;
   const existing = await model.findFirst({ where: { businessId, name: trimmed } });
   if (existing) return existing.id;
-  const created = await model.create({ data: { businessId, name: trimmed } });
-  return created.id;
+  try {
+    return (await model.create({ data: { businessId, name: trimmed } })).id;
+  } catch {
+    // Dibuat bersamaan oleh permintaan lain (nama unik per usaha) — ambil yang sudah ada.
+    const again = await model.findFirst({ where: { businessId, name: trimmed } });
+    if (again) return again.id;
+    throw new Error(`Gagal menyimpan pilihan "${trimmed}".`);
+  }
 }
 
 export const findOrCreatePaymentMethod = (b: string, n: string) => findOrCreate(prisma.paymentMethod, b, n);
@@ -64,8 +39,16 @@ export const findOrCreateProductOtherCostCategory = (b: string, n: string) =>
   findOrCreate(prisma.productOtherCostCategory, b, n);
 export const findOrCreateFixedCostCategory = (b: string, n: string) => findOrCreate(prisma.fixedCostCategory, b, n);
 
+/** Kategori pemasukan "Penjualan" — dipakai semua uang masuk dari penjualan/pesanan. */
 export async function salesIncomeCategoryId(businessId: string) {
   return (await findOrCreateIncomeCategory(businessId, "Penjualan"))!;
+}
+
+/** Pastikan pelanggan yang dipilih memang milik usaha ini (bukan id dari usaha lain). */
+export async function ownCustomerId(businessId: string, customerId: string): Promise<string | null> {
+  if (!customerId) return null;
+  const c = await prisma.customer.findFirst({ where: { id: customerId, businessId }, select: { id: true } });
+  return c?.id ?? null;
 }
 
 /**
@@ -92,57 +75,5 @@ export async function logActivity(businessId: string, action: string, summary: s
     });
   } catch (e) {
     console.error("[activity]", e);
-  }
-}
-
-/** "1.250.000" / "Rp 1.250.000" / "1250000" -> 1250000 */
-export function parseAmount(raw: FormDataEntryValue | null): number {
-  const digits = String(raw ?? "").replace(/[^\d]/g, "");
-  return digits ? Number(digits) : 0;
-}
-
-export type LineItemInput = { productId: string; quantity: number; unitPrice: number };
-
-/** Baca daftar barang dari field JSON tersembunyi form penjualan/pesanan. */
-export function parseItems(raw: FormDataEntryValue | null): LineItemInput[] {
-  try {
-    const arr = JSON.parse(String(raw ?? "[]"));
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .map((x) => ({
-        productId: String(x?.productId ?? ""),
-        quantity: Math.max(0, Math.floor(Number(x?.quantity) || 0)),
-        unitPrice: Math.max(0, Math.floor(Number(x?.unitPrice) || 0)),
-      }))
-      .filter((x) => x.productId && x.quantity > 0);
-  } catch {
-    return [];
-  }
-}
-
-/** Jumlahkan kuantitas per produk (produk yang sama muncul di beberapa baris). */
-export function sumQtyByProduct(items: LineItemInput[]): Map<string, number> {
-  const m = new Map<string, number>();
-  for (const it of items) m.set(it.productId, (m.get(it.productId) ?? 0) + it.quantity);
-  return m;
-}
-
-export type MaterialInput = { name: string; quantity: number; unit: string; unitCost: number };
-
-/** Baca rincian bahan baku dari field JSON tersembunyi form produk. */
-export function parseMaterials(raw: FormDataEntryValue | null): MaterialInput[] {
-  try {
-    const arr = JSON.parse(String(raw ?? "[]"));
-    if (!Array.isArray(arr)) return [];
-    return arr
-      .map((x) => ({
-        name: String(x?.name ?? "").trim(),
-        quantity: Math.max(0, Number(x?.quantity) || 0),
-        unit: String(x?.unit ?? "pcs").trim() || "pcs",
-        unitCost: Math.max(0, Number(x?.unitCost) || 0),
-      }))
-      .filter((m) => m.name);
-  } catch {
-    return [];
   }
 }

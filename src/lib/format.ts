@@ -1,3 +1,5 @@
+import { BUSINESS_TIME_ZONE, wibParts } from "./date-range";
+
 const IDR = new Intl.NumberFormat("id-ID", {
   style: "currency",
   currency: "IDR",
@@ -43,16 +45,20 @@ export function groupDigits(raw: string) {
   return new Intl.NumberFormat("id-ID").format(Number(digits));
 }
 
+// Tanggal selalu ditampilkan dalam WIB, sama di server (UTC) maupun di HP pengguna.
+const TZ = { timeZone: BUSINESS_TIME_ZONE } as const;
+
 export function formatDate(d: Date) {
-  return d.toLocaleDateString("id-ID", { day: "numeric", month: "short", year: "numeric" });
+  return d.toLocaleDateString("id-ID", { ...TZ, day: "numeric", month: "short", year: "numeric" });
 }
 
 export function formatDateLong(d: Date) {
-  return d.toLocaleDateString("id-ID", { day: "numeric", month: "long", year: "numeric" });
+  return d.toLocaleDateString("id-ID", { ...TZ, day: "numeric", month: "long", year: "numeric" });
 }
 
 export function formatDateTime(d: Date) {
   return d.toLocaleString("id-ID", {
+    ...TZ,
     day: "numeric",
     month: "short",
     year: "numeric",
@@ -63,9 +69,8 @@ export function formatDateTime(d: Date) {
 
 /** Short, human invoice number derived from a cuid + date, e.g. INV/2026/03/K7F2QX. */
 export function invoiceNumber(prefix: "INV" | "ORD", id: string, date: Date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  return `${prefix}/${y}/${m}/${id.slice(-6).toUpperCase()}`;
+  const { year, month } = wibParts(date);
+  return `${prefix}/${year}/${String(month + 1).padStart(2, "0")}/${id.slice(-6).toUpperCase()}`;
 }
 
 export function initials(name: string) {

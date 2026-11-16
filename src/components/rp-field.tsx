@@ -13,6 +13,8 @@ export function RpField({
   autoFocus,
   className = "",
   invalid,
+  ariaLabel,
+  id,
 }: {
   value: number;
   onChange: (n: number) => void;
@@ -20,11 +22,16 @@ export function RpField({
   autoFocus?: boolean;
   className?: string;
   invalid?: boolean;
+  ariaLabel?: string;
+  id?: string;
 }) {
   return (
     <div className="relative">
-      <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 font-semibold text-ink-3">Rp</span>
+      <span aria-hidden className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 font-semibold text-ink-3">Rp</span>
       <input
+        id={id}
+        aria-label={ariaLabel}
+        aria-invalid={invalid || undefined}
         inputMode="numeric"
         autoComplete="off"
         autoFocus={autoFocus}

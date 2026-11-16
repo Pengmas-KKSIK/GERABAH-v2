@@ -6,7 +6,8 @@ import { Card, Callout } from "./ui";
 import { ActionForm, SubmitButton } from "./form";
 import { ItemsEditor, type ItemRow } from "./items-editor";
 import { RpField } from "./rp-field";
-import type { FormState } from "@/lib/actions/_helpers";
+import type { FormState } from "@/lib/action-state";
+import { effectiveUnitPrice, totals } from "@/lib/domain/payment";
 
 type Action = (prev: FormState, formData: FormData) => Promise<FormState>;
 type Product = { id: string; name: string; sellingPrice: number };
@@ -30,8 +31,12 @@ export function OrderForm({
   const [discount, setDiscount] = useState(0);
   const [dp, setDp] = useState(0);
 
-  const subtotal = rows.reduce((s, r) => s + r.quantity * r.unitPrice, 0);
-  const total = Math.max(subtotal - discount, 0);
+  // Harga kosong = harga jual produk (sama dengan aturan di server).
+  const priceById = new Map(products.map((p) => [p.id, p.sellingPrice]));
+  const { total } = totals(
+    rows.map((r) => ({ quantity: r.quantity, unitPrice: effectiveUnitPrice(r.unitPrice, priceById.get(r.productId) ?? 0) })),
+    discount
+  );
   const remaining = Math.max(total - dp, 0);
   const totalUnits = rows.reduce((s, r) => s + r.quantity, 0);
 
@@ -43,22 +48,22 @@ export function OrderForm({
     <ActionForm action={action} footer={<SubmitButton>Simpan Pesanan</SubmitButton>}>
       <input type="hidden" name="items" value={JSON.stringify(rows)} readOnly />
 
-      <p className="label mb-2">Barang yang Dipesan</p>
+      <h2 className="form-section">Barang yang dipesan</h2>
       <ItemsEditor products={products} value={rows} onChange={setRows} />
 
       <Card>
         <label className="block">
-          <span className="mb-1.5 block text-[14px] font-medium text-ink-2">Diskon keseluruhan (opsional)</span>
+          <span className="field-label">Diskon keseluruhan (opsional)</span>
           <input type="hidden" name="discount" value={discount || ""} readOnly />
           <RpField value={discount} onChange={setDiscount} />
         </label>
       </Card>
 
-      <p className="label mb-2 mt-2">Pembeli &amp; Pembayaran</p>
+      <h2 className="form-section">Pembeli dan pembayaran</h2>
       <Card>
         <div className="flex flex-col gap-4">
           <label className="block">
-            <span className="mb-1.5 block text-[14px] font-medium text-ink-2">Pelanggan (opsional)</span>
+            <span className="field-label">Pelanggan (opsional)</span>
             <select name="customerId" className="field" defaultValue="">
               <option value="">Tanpa nama</option>
               {customers.map((c) => (
@@ -70,11 +75,11 @@ export function OrderForm({
           </label>
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
-              <span className="mb-1.5 block text-[14px] font-medium text-ink-2">Tenggat (opsional)</span>
+              <span className="field-label">Jatuh tempo (opsional)</span>
               <input name="dueDate" type="date" className="field" />
             </label>
             <label className="block">
-              <span className="mb-1.5 block text-[14px] font-medium text-ink-2">Dari mana</span>
+              <span className="field-label">Tempat pesan</span>
               <input name="channel" list="ochan" className="field" placeholder="mis. WhatsApp" />
               <datalist id="ochan">
                 {channels.map((c) => (
@@ -84,26 +89,26 @@ export function OrderForm({
             </label>
           </div>
           <label className="block">
-            <span className="mb-1.5 block text-[14px] font-medium text-ink-2">Uang muka / DP (opsional)</span>
+            <span className="field-label">Uang muka / DP (opsional)</span>
             <input type="hidden" name="downPayment" value={dp || ""} readOnly />
             <RpField value={dp} onChange={setDp} />
           </label>
           <label className="block">
-            <span className="mb-1.5 block text-[14px] font-medium text-ink-2">Catatan (opsional)</span>
+            <span className="field-label">Catatan (opsional)</span>
             <textarea name="notes" rows={2} className="field" placeholder="Warna, ukuran, permintaan khusus…" />
           </label>
         </div>
       </Card>
 
-      <div className="rounded-[var(--radius-lg)] bg-ink px-4 py-3.5 text-canvas">
-        <div className="flex items-center justify-between text-[13px] text-canvas/70">
+      <div className="rounded-[var(--radius-lg)] bg-ink px-4 py-3.5 text-canvas" aria-live="polite">
+        <div className="flex items-center justify-between text-[14px] text-canvas/75">
           <span>
             {rows.length} jenis · {totalUnits} barang
           </span>
           {dp > 0 && <span>DP {formatIDR(dp)} · sisa {formatIDR(remaining)}</span>}
         </div>
         <div className="mt-1 flex items-baseline justify-between">
-          <span className="text-[13px] font-medium text-canvas/80">Total pesanan</span>
+          <span className="text-[15px] font-medium text-canvas/85">Total pesanan</span>
           <span className="figure text-[24px]">{formatIDR(total)}</span>
         </div>
       </div>

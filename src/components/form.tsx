@@ -4,7 +4,7 @@ import { useActionState } from "react";
 import { useFormStatus } from "react-dom";
 import type { ReactNode } from "react";
 import { IconAlert, IconCheck } from "./icons";
-import type { FormState } from "@/lib/actions/_helpers";
+import type { FormState } from "@/lib/action-state";
 
 type Action = (prev: FormState, formData: FormData) => Promise<FormState>;
 
@@ -52,13 +52,19 @@ export function ActionForm({
         Object.entries(hidden).map(([k, v]) => <input key={k} type="hidden" name={k} value={v} />)}
       {children}
       {state.error && (
-        <div className="flex items-start gap-2 rounded-[var(--radius-md)] bg-bad-soft px-3.5 py-3 text-[13.5px] font-medium text-bad">
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-[var(--radius-md)] bg-bad-soft px-3.5 py-3 text-[14px] font-medium text-bad"
+        >
           <IconAlert className="mt-px h-4 w-4 shrink-0" strokeWidth={2} />
           <span>{state.error}</span>
         </div>
       )}
       {state.message && !state.error && (
-        <div className="flex items-start gap-2 rounded-[var(--radius-md)] bg-good-soft px-3.5 py-3 text-[13.5px] font-medium text-good">
+        <div
+          role="status"
+          className="flex items-start gap-2 rounded-[var(--radius-md)] bg-good-soft px-3.5 py-3 text-[14px] font-medium text-good"
+        >
           <IconCheck className="mt-px h-4 w-4 shrink-0" strokeWidth={2.2} />
           <span>{state.message}</span>
         </div>

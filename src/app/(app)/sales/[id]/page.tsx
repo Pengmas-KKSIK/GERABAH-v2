@@ -4,12 +4,12 @@ import { getCurrentBusiness } from "@/lib/current-user";
 import { markSalePaid } from "@/lib/actions/sales";
 import { formatIDR, formatDateLong, invoiceNumber } from "@/lib/format";
 import { waUrl, reminderMessage } from "@/lib/whatsapp";
-import { paymentStatusLabel, paymentStatusTone } from "@/lib/labels";
 import { PageHeader } from "@/components/page-header";
-import { Card, Badge, List, Row } from "@/components/ui";
+import { Hero, HeroNote, List, Row, DetailList, SectionTitle } from "@/components/ui";
+import { PaymentBadge } from "@/components/status-badge";
 import { InvoiceActions } from "@/components/invoice-actions";
 import { ActionButton } from "@/components/action-button";
-import { IconCheck } from "@/components/icons";
+import { IconCheck, IconMessage } from "@/components/icons";
 
 export default async function SaleDetailPage({ params }: PageProps<"/sales/[id]">) {
   const { id } = await params;
@@ -28,20 +28,21 @@ export default async function SaleDetailPage({ params }: PageProps<"/sales/[id]"
     <>
       <PageHeader title="Penjualan" subtitle={number} back="/sales" />
 
-      <Card className="mb-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="label">Total</p>
-            <p className="figure mt-1 text-[28px] text-ink">{formatIDR(sale.total)}</p>
-          </div>
-          <Badge tone={paymentStatusTone(sale.paymentStatus)}>{paymentStatusLabel(sale.paymentStatus)}</Badge>
-        </div>
-        {sale.outstandingBalance > 0 && (
-          <p className="mt-2 text-[13px] text-clay">Sisa tagihan {formatIDR(sale.outstandingBalance)}</p>
-        )}
-      </Card>
+      <Hero
+        label="Total"
+        value={formatIDR(sale.total)}
+        aside={<PaymentBadge status={sale.paymentStatus} />}
+      >
+        {sale.outstandingBalance > 0 ? (
+          <HeroNote>
+            Sudah dibayar {formatIDR(sale.amountPaid)} · sisa{" "}
+            <span className="font-extrabold text-white">{formatIDR(sale.outstandingBalance)}</span>
+          </HeroNote>
+        ) : null}
+      </Hero>
 
-      <List className="mb-4">
+      <SectionTitle>Barang</SectionTitle>
+      <List>
         {sale.items.map((it) => (
           <Row
             key={it.id}
@@ -54,23 +55,18 @@ export default async function SaleDetailPage({ params }: PageProps<"/sales/[id]"
         {sale.discount > 0 && <Row title="Diskon" amount={`−${formatIDR(sale.discount)}`} amountTone="out" chevron={false} />}
       </List>
 
-      <Card className="mb-4">
-        <dl className="flex flex-col divide-y divide-line">
-          {[
-            ["Tanggal", formatDateLong(sale.date)],
-            ["Pelanggan", sale.customer?.name ?? "Pelanggan umum"],
-            ["Tempat jualan", sale.channel?.name ?? "-"],
-            ["Bayar pakai", sale.paymentMethod?.name ?? "-"],
-            ["Sudah dibayar", formatIDR(sale.amountPaid)],
-          ].map(([k, v]) => (
-            <div key={k} className="flex justify-between gap-4 py-2.5 first:pt-0 last:pb-0">
-              <dt className="text-[13px] text-ink-3">{k}</dt>
-              <dd className="text-right text-[13.5px] font-medium text-ink">{v}</dd>
-            </div>
-          ))}
-        </dl>
-        {sale.notes && <p className="mt-3 border-t border-line pt-3 text-[13px] text-ink-2">{sale.notes}</p>}
-      </Card>
+      <SectionTitle>Rincian</SectionTitle>
+      <DetailList
+        className="mb-6"
+        rows={[
+          ["Tanggal", formatDateLong(sale.date)],
+          ["Pelanggan", sale.customer?.name ?? "Pelanggan umum"],
+          ["Tempat jualan", sale.channel?.name ?? "—"],
+          ["Bayar pakai", sale.paymentMethod?.name ?? "—"],
+          ["Sudah dibayar", formatIDR(sale.amountPaid)],
+          ...(sale.notes ? ([["Catatan", sale.notes]] as [string, string][]) : []),
+        ]}
+      />
 
       {sale.outstandingBalance > 0 && (
         <div className="mb-3 flex flex-col gap-2.5">
@@ -91,7 +87,8 @@ export default async function SaleDetailPage({ params }: PageProps<"/sales/[id]"
               rel="noreferrer"
               className="btn btn-secondary w-full"
             >
-              Hubungi Pembeli (WhatsApp)
+              <IconMessage className="h-[18px] w-[18px]" strokeWidth={2} />
+              Ingatkan lewat WhatsApp
             </a>
           )}
           <ActionButton
@@ -99,7 +96,11 @@ export default async function SaleDetailPage({ params }: PageProps<"/sales/[id]"
             hidden={{ id: sale.id }}
             className="btn btn-secondary w-full"
             pendingLabel="Menyimpan…"
-            confirm="Tandai penjualan ini lunas? Sisa tagihan akan dicatat sebagai uang masuk."
+            confirm={{
+              title: "Tandai penjualan ini lunas?",
+              body: `Sisa tagihan ${formatIDR(sale.outstandingBalance)} akan dicatat sebagai uang masuk.`,
+              confirmLabel: "Tandai Lunas",
+            }}
           >
             <IconCheck className="h-4 w-4" strokeWidth={2.2} />
             Tandai Lunas

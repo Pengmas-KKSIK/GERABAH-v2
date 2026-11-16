@@ -25,6 +25,18 @@ Set semuanya untuk **Production, Preview, Development** (centang semua).
 > `src/lib/config.ts`. Untuk menggantinya tanpa ubah kode, set env `ADMIN_WHATSAPP`
 > (format `62…`, **tanpa** prefix `NEXT_PUBLIC_`) lalu redeploy.
 
+### Lupa kata sandi lewat email (Resend)
+
+Halaman **Lupa Kata Sandi** mengirim link atur ulang (berlaku 30 menit, sekali pakai) ke email pengguna
+kalau `RESEND_API_KEY` diset. Tanpa itu, halaman hanya menampilkan tombol WhatsApp admin.
+
+1. Daftar di https://resend.com (gratis 3.000 email/bulan) → **API Keys → Create API Key**.
+2. **Domains → Add Domain** → masukkan domain kamu → salin record DNS (TXT/MX) yang diberikan ke panel
+   DNS tempat beli domain (mis. Hostinger) → tunggu status **Verified**.
+3. Set env: `RESEND_API_KEY`, `EMAIL_FROM="GERABAH <noreply@domainmu.com>"`, dan `APP_URL="https://domainmu.com"`.
+
+> Sebelum domain diverifikasi, pengirim `onboarding@resend.dev` hanya bisa mengirim ke email pemilik akun Resend.
+
 ### Lupa kata sandi (reset manual)
 
 Tidak ada email otomatis. Kalau ada pengguna lupa kata sandi:

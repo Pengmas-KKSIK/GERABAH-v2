@@ -1,7 +1,9 @@
 import { prisma } from "@/lib/prisma";
-import { requireOwner } from "@/lib/actions/_helpers";
+import { requireOwner } from "@/lib/guards";
 import { formatDate, formatDateTime } from "@/lib/format";
+import { toISODate } from "@/lib/date-range";
 import { EmptyState, List, Row, Badge } from "@/components/ui";
+import { PageHeader } from "@/components/page-header";
 import { IconClock } from "@/components/icons";
 
 export default async function ActivityPage() {
@@ -15,28 +17,25 @@ export default async function ActivityPage() {
 
   const byDay = new Map<string, typeof logs>();
   for (const l of logs) {
-    const key = l.createdAt.toISOString().slice(0, 10);
+    const key = toISODate(l.createdAt);
     byDay.set(key, [...(byDay.get(key) ?? []), l]);
   }
 
   return (
     <>
-      <header className="mb-5">
-        <h1 className="text-[25px] font-bold text-ink">Log Aktivitas</h1>
-        <p className="mt-0.5 text-[14px] text-ink-2">Apa yang diubah, kapan, dan oleh siapa</p>
-      </header>
+      <PageHeader title="Log Aktivitas" subtitle="Apa yang diubah, kapan, dan oleh siapa" />
 
       {logs.length === 0 ? (
         <EmptyState
-          icon={<IconClock className="h-6 w-6" strokeWidth={1.7} />}
+          icon={<IconClock className="h-6 w-6" strokeWidth={1.8} />}
           title="Belum ada aktivitas"
           body="Setiap kali kamu atau staf mencatat penjualan, mengubah stok/harga, atau mencatat pengeluaran, tercatat di sini."
         />
       ) : (
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-6">
           {[...byDay.entries()].map(([day, items]) => (
             <div key={day}>
-              <p className="mb-1.5 px-1 text-[12.5px] font-semibold text-ink">{formatDate(items[0].createdAt)}</p>
+              <h2 className="mb-2 px-1 text-[15px] font-semibold text-ink">{formatDate(items[0].createdAt)}</h2>
               <List>
                 {items.map((l) => (
                   <Row
@@ -47,7 +46,7 @@ export default async function ActivityPage() {
                       l.role === "staff" ? (
                         <Badge tone="info">Staf</Badge>
                       ) : (
-                        <Badge tone="neutral">Owner</Badge>
+                        <Badge tone="neutral">Pemilik</Badge>
                       )
                     }
                     chevron={false}
