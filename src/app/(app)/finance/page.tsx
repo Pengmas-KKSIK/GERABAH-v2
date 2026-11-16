@@ -2,12 +2,18 @@ import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { getSessionContext } from "@/lib/current-user";
 import { formatIDR, formatDate } from "@/lib/format";
-import { Card, EmptyState, List, Row, Callout } from "@/components/ui";
+import { toISODate, todayISO } from "@/lib/date-range";
+import { parseDateFilter, datePresets, withDate } from "@/lib/date-filter";
+import { DateFilter } from "@/components/date-filter";
+import { Hero, FlowPair, EmptyState, List, Row, FlowChip, StatGroup } from "@/components/ui";
+import { PageHeader } from "@/components/page-header";
 import { Segmented } from "@/components/segmented";
-import { IconArrowDown, IconArrowUp } from "@/components/icons";
+import { IconArrowDown, IconArrowUp, IconWallet } from "@/components/icons";
 
 export default async function FinancePage({ searchParams }: PageProps<"/finance">) {
-  const { type } = await searchParams;
+  const sp = await searchParams;
+  const { type } = sp;
+  const dateFilter = parseDateFilter(sp);
   const ctx = await getSessionContext();
   if (!ctx?.business) return null;
   const business = ctx.business;
@@ -24,95 +30,114 @@ export default async function FinancePage({ searchParams }: PageProps<"/finance"
   const balance = totalIncome - totalExpense;
 
   const TABS = isStaff
-    ? [{ key: "EXPENSE", label: "Uang Keluar", href: "/finance" }]
+    ? [{ key: "EXPENSE", label: "Uang Keluar", href: withDate("/finance", dateFilter) }]
     : [
-        { key: "ALL", label: "Semua", href: "/finance" },
-        { key: "INCOME", label: "Uang Masuk", href: "/finance?type=INCOME" },
-        { key: "EXPENSE", label: "Uang Keluar", href: "/finance?type=EXPENSE" },
+        { key: "ALL", label: "Semua", href: withDate("/finance", dateFilter) },
+        { key: "INCOME", label: "Uang Masuk", href: withDate("/finance", dateFilter, "type=INCOME") },
+        { key: "EXPENSE", label: "Uang Keluar", href: withDate("/finance", dateFilter, "type=EXPENSE") },
       ];
 
   const activeTab = isStaff ? "EXPENSE" : type === "EXPENSE" ? "EXPENSE" : type === "INCOME" ? "INCOME" : "ALL";
-  const filtered = activeTab === "ALL" ? allTx : allTx.filter((t) => t.type === activeTab);
+  const byType = activeTab === "ALL" ? allTx : allTx.filter((t) => t.type === activeTab);
+  // Saldo kas di atas selalu total keseluruhan; filter tanggal hanya mempersempit daftar di bawah.
+  const filtered =
+    dateFilter.mode === "all" ? byType : byType.filter((t) => t.date >= dateFilter.from && t.date <= dateFilter.to);
+  const rangeIncome = filtered.filter((t) => t.type === "INCOME").reduce((s, t) => s + t.amount, 0);
+  const rangeExpense = filtered.filter((t) => t.type === "EXPENSE").reduce((s, t) => s + t.amount, 0);
 
   const byDay = new Map<string, typeof filtered>();
   for (const t of filtered) {
-    const key = t.date.toISOString().slice(0, 10);
+    const key = toISODate(t.date);
     byDay.set(key, [...(byDay.get(key) ?? []), t]);
   }
 
   return (
     <>
-      <header className="mb-5">
-        <h1 className="text-[25px] font-bold text-ink">Keuangan</h1>
-        <p className="mt-0.5 text-[14px] text-ink-2">
-          {isStaff ? "Catat uang keluar usaha" : "Semua uang masuk dan keluar usaha"}
-        </p>
-      </header>
+      <PageHeader
+        title="Keuangan"
+        subtitle={isStaff ? "Catat uang yang dikeluarkan untuk usaha" : "Semua uang masuk dan keluar usaha"}
+      />
 
       {isStaff ? (
-        <Card className="mb-4">
-          <p className="label">Total Uang Keluar</p>
-          <p className="figure mt-1.5 truncate text-[clamp(26px,9vw,34px)] text-clay">{formatIDR(totalExpense)}</p>
-        </Card>
+        <Hero label="Total uang keluar" value={formatIDR(totalExpense)} tone="out" />
       ) : (
-        <Card className="mb-4">
-          <p className="label">Saldo Kas Usaha</p>
-          <p className={`figure mt-1.5 truncate text-[clamp(26px,9vw,34px)] ${balance >= 0 ? "text-ink" : "text-bad"}`}>
-            {formatIDR(balance)}
-          </p>
-          <div className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-3.5 text-[13px]">
-            <div className="min-w-0">
-              <span className="label block">Total Masuk</span>
-              <span className="tnum block truncate font-bold text-teal">{formatIDR(totalIncome)}</span>
-            </div>
-            <div className="min-w-0">
-              <span className="label block">Total Keluar</span>
-              <span className="tnum block truncate font-bold text-clay">{formatIDR(totalExpense)}</span>
-            </div>
-          </div>
-        </Card>
+        <Hero label="Saldo kas usaha" value={formatIDR(balance)} tone={balance < 0 ? "bad" : "ink"}>
+          <FlowPair income={formatIDR(totalIncome)} expense={formatIDR(totalExpense)} incomeLabel="Total masuk" expenseLabel="Total keluar" />
+        </Hero>
       )}
 
-      <div className={`mb-4 grid gap-2.5 ${isStaff ? "grid-cols-1" : "grid-cols-2"}`}>
+      <div className={`mb-8 grid gap-2.5 ${isStaff ? "grid-cols-1" : "grid-cols-2"}`}>
         {!isStaff && (
-          <Link href="/finance/new?type=INCOME" className="btn btn-primary">
-            <IconArrowDown className="h-4 w-4" strokeWidth={2.2} />
+          <Link href="/finance/new?type=INCOME" className={`btn ${activeTab === "EXPENSE" ? "btn-secondary" : "btn-primary"}`}>
+            <IconArrowDown className="h-[18px] w-[18px]" strokeWidth={2.2} />
             Uang Masuk
           </Link>
         )}
-        <Link href="/finance/new?type=EXPENSE" className={isStaff ? "btn btn-primary" : "btn btn-secondary"}>
-          <IconArrowUp className="h-4 w-4" strokeWidth={2.2} />
-          Catat Uang Keluar
+        <Link
+          href="/finance/new?type=EXPENSE"
+          className={`btn ${isStaff || activeTab === "EXPENSE" ? "btn-primary" : "btn-secondary"}`}
+        >
+          <IconArrowUp className="h-[18px] w-[18px]" strokeWidth={2.2} />
+          Uang Keluar
         </Link>
       </div>
 
       {!isStaff && (
         <div className="mb-4">
-          <Segmented options={TABS} active={activeTab} />
+          <Segmented label="Jenis catatan" options={TABS} active={activeTab} />
         </div>
       )}
 
-      {filtered.length === 0 ? (
+      <DateFilter
+        basePath="/finance"
+        keep={!isStaff && activeTab !== "ALL" ? { type: activeTab } : {}}
+        active={dateFilter}
+        presets={datePresets()}
+        today={todayISO()}
+      />
+
+      {dateFilter.mode !== "all" && filtered.length > 0 && (
+        <StatGroup
+          className="mb-6"
+          items={
+            isStaff
+              ? [{ label: "Uang keluar", value: formatIDR(rangeExpense), tone: "out" }]
+              : [
+                  { label: "Masuk", value: formatIDR(rangeIncome), tone: "in" },
+                  { label: "Keluar", value: formatIDR(rangeExpense), tone: "out" },
+                  { label: "Selisih", value: `${rangeIncome - rangeExpense < 0 ? "−" : ""}${formatIDR(Math.abs(rangeIncome - rangeExpense))}` },
+                ]
+          }
+        />
+      )}
+
+      {filtered.length === 0 && dateFilter.mode !== "all" && byType.length > 0 ? (
         <EmptyState
-          icon={<IconArrowUp className="h-6 w-6" strokeWidth={1.7} />}
-          title="Belum ada catatan"
+          icon={<IconWallet className="h-6 w-6" strokeWidth={1.8} />}
+          title="Tidak ada catatan di tanggal ini"
+          body="Coba pilih tanggal lain, atau tekan Semua tanggal."
+        />
+      ) : filtered.length === 0 ? (
+        <EmptyState
+          icon={<IconWallet className="h-6 w-6" strokeWidth={1.8} />}
+          title={activeTab === "ALL" ? "Belum ada catatan" : `Belum ada ${activeTab === "INCOME" ? "uang masuk" : "uang keluar"}`}
           body={
             isStaff
               ? "Setiap kali mengeluarkan uang untuk usaha, catat di sini. Sekali sehari juga cukup."
               : "Setiap kali menerima atau mengeluarkan uang untuk usaha, catat di sini. Sekali sehari juga cukup."
           }
-          actionLabel="Catat Sekarang"
-          actionHref="/finance/new?type=EXPENSE"
+          actionLabel={activeTab === "INCOME" ? "Catat Uang Masuk" : "Catat Uang Keluar"}
+          actionHref={activeTab === "INCOME" ? "/finance/new?type=INCOME" : "/finance/new?type=EXPENSE"}
         />
       ) : (
-        <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-6">
           {[...byDay.entries()].map(([day, items]) => {
             const net = items.reduce((s, t) => s + (t.type === "INCOME" ? t.amount : -t.amount), 0);
             return (
               <div key={day}>
-                <div className="mb-1.5 flex items-baseline justify-between px-1">
-                  <span className="text-[12.5px] font-semibold text-ink">{formatDate(items[0].date)}</span>
-                  <span className={`tnum text-[11.5px] font-semibold ${net >= 0 ? "text-teal" : "text-clay"}`}>
+                <div className="mb-2 flex items-baseline justify-between px-1">
+                  <h2 className="text-[15px] font-semibold text-ink">{formatDate(items[0].date)}</h2>
+                  <span className={`tnum text-[14px] font-semibold ${net >= 0 ? "text-teal" : "text-clay"}`}>
                     {net >= 0 ? "+" : "−"}
                     {formatIDR(Math.abs(net))}
                   </span>
@@ -122,10 +147,12 @@ export default async function FinancePage({ searchParams }: PageProps<"/finance"
                     <Row
                       key={t.id}
                       href={`/finance/${t.id}`}
+                      leading={<FlowChip dir={t.type === "INCOME" ? "in" : "out"} />}
                       title={t.description || t.incomeCategory?.name || t.expenseCategory?.name || "Transaksi"}
                       meta={`${t.incomeCategory?.name ?? t.expenseCategory?.name ?? "Lainnya"} · ${t.paymentMethod?.name ?? "Tunai"}`}
                       amount={`${t.type === "INCOME" ? "+" : "−"}${formatIDR(t.amount)}`}
                       amountTone={t.type === "INCOME" ? "in" : "out"}
+                      chevron={false}
                     />
                   ))}
                 </List>
@@ -135,12 +162,6 @@ export default async function FinancePage({ searchParams }: PageProps<"/finance"
         </div>
       )}
 
-      <div className="mt-6">
-        <Callout>
-          Catat pengeluaran sekecil apa pun — tanah liat, kayu bakar, ongkos kirim, upah harian. Dari sinilah biaya
-          produksi dan harga jual yang pas bisa dihitung.
-        </Callout>
-      </div>
     </>
   );
 }

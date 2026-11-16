@@ -1,28 +1,29 @@
 import Link from "next/link";
 
-/** Link-based tab pills. Server-rendered; active tab passed in. */
+/** Pilihan berbentuk tab dalam satu jalur. Dirender di server; tab aktif dikirim dari halaman. */
 export function Segmented({
   options,
   active,
+  label,
 }: {
   options: { key: string; label: string; href: string }[];
   active: string;
+  /** Nama kelompok untuk pembaca layar, mis. "Periode". */
+  label?: string;
 }) {
   return (
-    <div className="no-scrollbar -mx-4 flex gap-1.5 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+    <nav aria-label={label} className="segment no-scrollbar w-full overflow-x-auto sm:w-fit">
       {options.map((o) => (
         <Link
           key={o.key}
           href={o.href}
-          className={`shrink-0 rounded-full px-3.5 py-2 text-[13px] font-semibold transition-colors ${
-            active === o.key
-              ? "bg-ink text-canvas"
-              : "border border-line-strong bg-surface text-ink-2 active:bg-surface-2"
-          }`}
+          scroll={false}
+          aria-current={active === o.key ? "page" : undefined}
+          className="segment-item shrink-0 sm:flex-none"
         >
           {o.label}
         </Link>
       ))}
-    </div>
+    </nav>
   );
 }

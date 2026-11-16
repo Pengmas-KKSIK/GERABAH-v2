@@ -4,13 +4,13 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { hashPassword } from "@/lib/auth";
-import { type FormState, run, requireOwner, logActivity } from "./_helpers";
+import { type FormState, UserError, run, requireOwner, text, logActivity } from "./_helpers";
 
 const staffSchema = z
   .object({
-    name: z.string().trim().min(1, "Isi nama staf."),
-    email: z.string().trim().toLowerCase().email("Email tidak valid."),
-    password: z.string().min(8, "Kata sandi minimal 8 karakter."),
+    name: z.string().trim().min(1, "Isi nama staf.").max(120),
+    email: z.string().trim().toLowerCase().email("Email tidak valid.").max(120),
+    password: z.string().min(8, "Kata sandi minimal 8 karakter.").max(72, "Kata sandi maksimal 72 karakter."),
     confirmPassword: z.string().min(1, "Ulangi kata sandinya."),
   })
   .refine((d) => d.password === d.confirmPassword, {
@@ -28,10 +28,10 @@ export async function addStaff(_prev: FormState, formData: FormData): Promise<Fo
       password: formData.get("password"),
       confirmPassword: formData.get("confirmPassword"),
     });
-    if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "Data tidak valid.");
+    if (!parsed.success) throw new UserError(parsed.error.issues[0]?.message ?? "Data tidak valid.");
 
     const existing = await prisma.user.findUnique({ where: { email: parsed.data.email } });
-    if (existing) throw new Error("Email ini sudah terpakai. Pakai email lain.");
+    if (existing) throw new UserError("Email ini sudah terpakai. Pakai email lain.");
 
     await prisma.user.create({
       data: {
@@ -52,14 +52,12 @@ export async function addStaff(_prev: FormState, formData: FormData): Promise<Fo
 
 export async function removeStaff(_prev: FormState, formData: FormData): Promise<FormState> {
   const business = await requireOwner();
-  const id = String(formData.get("id") ?? "");
+  const id = text(formData.get("id"));
 
   const res = await run(async () => {
-    const staff = await prisma.user.findUnique({ where: { id } });
-    if (!staff || staff.memberOfBusinessId !== business.id) {
-      throw new Error("Staf tidak ditemukan.");
-    }
-    await prisma.user.delete({ where: { id } });
+    const staff = await prisma.user.findFirst({ where: { id, memberOfBusinessId: business.id } });
+    if (!staff) throw new UserError("Staf tidak ditemukan.");
+    await prisma.user.delete({ where: { id: staff.id } });
     await logActivity(business.id, "staff.remove", `Hapus akun staf ${staff.name}`);
   });
 

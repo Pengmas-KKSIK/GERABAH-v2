@@ -1,10 +1,11 @@
-import { prisma } from "@/lib/prisma";
-import { requireOwner } from "@/lib/actions/_helpers";
-import { resolveRange, todayISO } from "@/lib/date-range";
+import { requireOwner } from "@/lib/guards";
+import { resolveRange, todayISO, toISODate } from "@/lib/date-range";
+import { loadFinancialReport, type CatAmount } from "@/lib/reports";
 import { formatIDR } from "@/lib/format";
-import { Card, Callout } from "@/components/ui";
+import { Card, Hero, HeroPanel, SectionTitle } from "@/components/ui";
+import { PageHeader } from "@/components/page-header";
 import { Segmented } from "@/components/segmented";
-import { IconDownload } from "@/components/icons";
+import { IconDownload, IconChart } from "@/components/icons";
 
 const PERIODS = [
   { key: "week", label: "Mingguan", href: "/reports?period=week" },
@@ -13,169 +14,144 @@ const PERIODS = [
   { key: "custom", label: "Kustom", href: "/reports?period=custom" },
 ];
 
+const catRows = (rows: CatAmount[]) =>
+  rows.map(({ name, amount }) => (
+    <div key={name} className="flex justify-between gap-3 py-2.5 text-[15px]">
+      <span className="text-ink-2">{name}</span>
+      <span className="tnum font-medium text-ink">{formatIDR(amount)}</span>
+    </div>
+  ));
+
 export default async function ReportsPage({ searchParams }: PageProps<"/reports">) {
   const { period, from: fromParam, to: toParam } = await searchParams;
-  const active =
-    period === "week" ? "week" : period === "year" ? "year" : period === "custom" ? "custom" : "month";
   const business = await requireOwner();
 
   const customFrom = typeof fromParam === "string" ? fromParam : undefined;
   const customTo = typeof toParam === "string" ? toParam : undefined;
-  const { from, to, label } = resolveRange(active, customFrom, customTo);
+  const range = resolveRange(typeof period === "string" ? period : undefined, customFrom, customTo);
+  const { from, to, label } = range;
+  // Pilihan "Kustom" tetap aktif walau tanggalnya belum diisi (supaya form tanggal muncul).
+  const active = period === "custom" ? "custom" : range.key;
   const downloadQuery =
-    active === "custom" && customFrom
-      ? `period=custom&from=${customFrom}&to=${customTo ?? customFrom}`
-      : `period=${active}`;
+    range.key === "custom" ? `period=custom&from=${toISODate(from)}&to=${toISODate(to)}` : `period=${range.key}`;
 
-  const [txs, opening, sales, unpaidOrders, unpaidSales, products] = await Promise.all([
-    prisma.financialTransaction.findMany({
-      where: { businessId: business.id, date: { gte: from, lte: to } },
-      include: { incomeCategory: true, expenseCategory: true },
-    }),
-    prisma.financialTransaction.findMany({
-      where: { businessId: business.id, date: { lt: from } },
-      select: { type: true, amount: true },
-    }),
-    prisma.sale.findMany({ where: { businessId: business.id, date: { gte: from, lte: to } }, include: { channel: true } }),
-    prisma.order.findMany({
-      where: { businessId: business.id, remainingPayment: { gt: 0 }, status: { not: "Cancelled" } },
-      select: { remainingPayment: true },
-    }),
-    prisma.sale.findMany({ where: { businessId: business.id, outstandingBalance: { gt: 0 } }, select: { outstandingBalance: true } }),
-    prisma.product.findMany({ where: { businessId: business.id }, select: { stock: true, sellingPrice: true } }),
-  ]);
-
-  const openingBalance = opening.reduce((s, t) => s + (t.type === "INCOME" ? t.amount : -t.amount), 0);
-
-  const salesGross = sales.reduce((s, x) => s + x.subtotal, 0);
-  const salesDiscount = sales.reduce((s, x) => s + x.discount, 0);
-  const salesNet = sales.reduce((s, x) => s + x.total, 0);
-  const receivableCount = unpaidOrders.length + unpaidSales.length;
-  const receivableTotal =
-    unpaidOrders.reduce((s, x) => s + x.remainingPayment, 0) +
-    unpaidSales.reduce((s, x) => s + x.outstandingBalance, 0);
-  const inventoryValue = products.reduce((s, p) => s + p.stock * p.sellingPrice, 0);
-
-  const incomeByCat = new Map<string, number>();
-  const expenseByCat = new Map<string, number>();
-  for (const t of txs) {
-    if (t.type === "INCOME") {
-      const k = t.incomeCategory?.name ?? "Lainnya";
-      incomeByCat.set(k, (incomeByCat.get(k) ?? 0) + t.amount);
-    } else {
-      const k = t.expenseCategory?.name ?? "Lainnya";
-      expenseByCat.set(k, (expenseByCat.get(k) ?? 0) + t.amount);
-    }
-  }
-
-  const totalIncome = [...incomeByCat.values()].reduce((a, b) => a + b, 0);
-  const totalExpense = [...expenseByCat.values()].reduce((a, b) => a + b, 0);
-  const netProfit = totalIncome - totalExpense;
-  const margin = totalIncome > 0 ? (netProfit / totalIncome) * 100 : 0;
-  const closingBalance = openingBalance + netProfit;
-
-  const channelMap = new Map<string, number>();
-  for (const s of sales) {
-    const k = s.channel?.name ?? "Tanpa tempat";
-    channelMap.set(k, (channelMap.get(k) ?? 0) + s.total);
-  }
-
-  const catRows = (map: Map<string, number>) =>
-    [...map.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([name, amt]) => (
-        <div key={name} className="flex justify-between py-2 text-[13.5px]">
-          <span className="text-ink-2">{name}</span>
-          <span className="tnum font-medium text-ink">{formatIDR(amt)}</span>
-        </div>
-      ));
+  const r = await loadFinancialReport(business.id, from, to);
+  const {
+    incomeByCat,
+    expenseByCat,
+    totalIncome,
+    totalExpense,
+    netProfit,
+    margin,
+    openingBalance,
+    closingBalance,
+    salesGross,
+    salesDiscount,
+    salesNet,
+    salesByChannel,
+  } = r;
 
   return (
     <>
-      <header className="mb-5">
-        <h1 className="text-[25px] font-bold text-ink">Laporan</h1>
-        <p className="mt-0.5 text-[14px] text-ink-2">{label}</p>
-      </header>
+      <PageHeader title="Laporan" subtitle={label} />
 
       <div className="mb-4">
-        <Segmented options={PERIODS} active={active} />
+        <Segmented label="Periode laporan" options={PERIODS} active={active} />
       </div>
 
       {active === "custom" && (
-        <form method="get" className="mb-4 flex items-end gap-2">
+        <form method="get" className="card mb-4 grid grid-cols-2 items-end gap-3 p-4 min-[520px]:grid-cols-[1fr_1fr_auto]">
           <input type="hidden" name="period" value="custom" />
           <label className="block flex-1">
-            <span className="mb-1.5 block text-[13px] font-medium text-ink-2">Dari tanggal</span>
+            <span className="field-label">Dari tanggal</span>
             <input type="date" name="from" defaultValue={customFrom ?? todayISO()} max={todayISO()} required className="field" />
           </label>
           <label className="block flex-1">
-            <span className="mb-1.5 block text-[13px] font-medium text-ink-2">Sampai tanggal</span>
+            <span className="field-label">Sampai tanggal</span>
             <input type="date" name="to" defaultValue={customTo ?? todayISO()} max={todayISO()} required className="field" />
           </label>
-          <button type="submit" className="btn btn-primary !min-h-[46px] !px-4">
+          <button type="submit" className="btn btn-primary col-span-2 min-[520px]:col-span-1">
             Tampilkan
           </button>
         </form>
       )}
 
-      {txs.length === 0 ? (
-        <Callout>Belum ada transaksi pada periode ini. Catat dulu uang masuk dan keluar di menu Keuangan.</Callout>
+      {!r.hasActivity ? (
+        <div className="card flex flex-col items-center px-6 py-10 text-center">
+          <span className="mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-surface-2 text-ink-2">
+            <IconChart className="h-6 w-6" strokeWidth={1.8} />
+          </span>
+          <p className="text-[17px] font-semibold text-ink">Belum ada transaksi di periode ini</p>
+          <p className="mt-1.5 max-w-xs text-[15px] leading-relaxed text-ink-2">
+            Pilih periode lain, atau catat dulu uang masuk dan keluar di menu Keuangan.
+          </p>
+        </div>
       ) : (
-        <div className="flex flex-col gap-5">
+        <div>
+          <Hero
+            label={netProfit >= 0 ? "Laba bersih" : "Rugi bersih"}
+            value={formatIDR(netProfit)}
+            tone={netProfit >= 0 ? "ink" : "bad"}
+          >
+            <HeroPanel>
+            <p className="text-[15px] leading-relaxed text-ink-2">
+              {totalIncome > 0 ? (
+                netProfit >= 0 ? (
+                  <>
+                    Dari setiap Rp 100 pendapatan, <span className="font-semibold text-ink">Rp {margin.toFixed(0)}</span> jadi
+                    untung.{" "}
+                  </>
+                ) : (
+                  <>
+                    Untuk setiap Rp 100 pendapatan, pengeluarannya lebih{" "}
+                    <span className="font-semibold text-bad">Rp {Math.abs(margin).toFixed(0)}</span>. Tinjau harga jual atau
+                    biaya produksi.{" "}
+                  </>
+                )
+              ) : null}
+              Laba bersih adalah uang yang benar-benar jadi milik usaha setelah semua pengeluaran.
+            </p>
+            </HeroPanel>
+          </Hero>
+
           {/* Laba Rugi */}
           <section>
-            <p className="label mb-2">Laba Rugi Sederhana</p>
-            <Card>
-              <p className="text-[13px] font-semibold text-ink">Uang masuk (pendapatan)</p>
-              <div className="mt-1 divide-y divide-line">
-                {catRows(incomeByCat)}
-              </div>
-              <div className="mt-1 flex justify-between border-t-2 border-line pt-2 text-[13.5px] font-bold">
+            <SectionTitle>Laba rugi sederhana</SectionTitle>
+            <Card className="!py-3">
+              <p className="text-[15px] font-semibold text-ink">Pendapatan (uang masuk)</p>
+              <div className="divide-y divide-line">{catRows(incomeByCat)}</div>
+              <div className="flex justify-between gap-3 border-t border-line-strong py-2.5 text-[15px] font-semibold">
                 <span>Jumlah pendapatan</span>
                 <span className="tnum text-teal">{formatIDR(totalIncome)}</span>
               </div>
 
-              <p className="mt-4 text-[13px] font-semibold text-ink">Uang keluar (pengeluaran)</p>
-              <div className="mt-1 divide-y divide-line">
-                {catRows(expenseByCat)}
-              </div>
-              <div className="mt-1 flex justify-between border-t-2 border-line pt-2 text-[13.5px] font-bold">
+              <p className="mt-4 text-[15px] font-semibold text-ink">Pengeluaran (uang keluar)</p>
+              <div className="divide-y divide-line">{catRows(expenseByCat)}</div>
+              <div className="flex justify-between gap-3 border-t border-line-strong pt-2.5 text-[15px] font-semibold">
                 <span>Jumlah pengeluaran</span>
                 <span className="tnum text-clay">{formatIDR(totalExpense)}</span>
-              </div>
-
-              <div className="mt-4 rounded-[var(--radius-md)] bg-ink px-4 py-3 text-canvas">
-                <div className="flex items-baseline justify-between">
-                  <span className="text-[13px] font-medium text-canvas/80">
-                    {netProfit >= 0 ? "Laba bersih" : "Rugi bersih"}
-                  </span>
-                  <span className="figure text-[22px]">{formatIDR(netProfit)}</span>
-                </div>
-                <p className="mt-0.5 text-right text-[12px] text-canvas/60">
-                  Dari setiap Rp 100 pendapatan, sisa {margin.toFixed(0)} jadi untung
-                </p>
               </div>
             </Card>
           </section>
 
           {/* Arus Kas */}
           <section>
-            <p className="label mb-2">Arus Kas Sederhana</p>
-            <Card>
-              <dl className="flex flex-col divide-y divide-line text-[13.5px]">
-                <div className="flex justify-between py-2 first:pt-0">
+            <SectionTitle>Arus kas sederhana</SectionTitle>
+            <Card className="!py-1">
+              <dl className="flex flex-col divide-y divide-line text-[15px]">
+                <div className="flex justify-between gap-3 py-2.5">
                   <dt className="text-ink-2">Saldo awal periode</dt>
                   <dd className="tnum font-medium text-ink">{formatIDR(openingBalance)}</dd>
                 </div>
-                <div className="flex justify-between py-2">
+                <div className="flex justify-between gap-3 py-2.5">
                   <dt className="text-ink-2">Kas masuk</dt>
                   <dd className="tnum font-medium text-teal">+{formatIDR(totalIncome)}</dd>
                 </div>
-                <div className="flex justify-between py-2">
+                <div className="flex justify-between gap-3 py-2.5">
                   <dt className="text-ink-2">Kas keluar</dt>
                   <dd className="tnum font-medium text-clay">−{formatIDR(totalExpense)}</dd>
                 </div>
-                <div className="flex justify-between py-2 last:pb-0 text-[14px] font-bold">
+                <div className="flex justify-between gap-3 py-2.5 font-semibold">
                   <dt>Saldo akhir periode</dt>
                   <dd className={`tnum ${closingBalance >= 0 ? "text-ink" : "text-bad"}`}>{formatIDR(closingBalance)}</dd>
                 </div>
@@ -185,30 +161,30 @@ export default async function ReportsPage({ searchParams }: PageProps<"/reports"
 
           {/* Ringkasan Penjualan */}
           <section>
-            <p className="label mb-2">Ringkasan Penjualan</p>
-            <Card>
-              <dl className="flex flex-col divide-y divide-line text-[13.5px]">
-                <div className="flex justify-between py-2 first:pt-0">
+            <SectionTitle>Ringkasan penjualan</SectionTitle>
+            <Card className="!py-1">
+              <dl className="flex flex-col divide-y divide-line text-[15px]">
+                <div className="flex justify-between gap-3 py-2.5">
                   <dt className="text-ink-2">Jumlah transaksi</dt>
-                  <dd className="tnum font-medium text-ink">{sales.length}</dd>
+                  <dd className="tnum font-medium text-ink">{r.salesCount}</dd>
                 </div>
-                <div className="flex justify-between py-2">
+                <div className="flex justify-between gap-3 py-2.5">
                   <dt className="text-ink-2">Penjualan kotor</dt>
                   <dd className="tnum font-medium text-ink">{formatIDR(salesGross)}</dd>
                 </div>
-                <div className="flex justify-between py-2">
+                <div className="flex justify-between gap-3 py-2.5">
                   <dt className="text-ink-2">Diskon diberikan</dt>
                   <dd className="tnum font-medium text-clay">−{formatIDR(salesDiscount)}</dd>
                 </div>
-                <div className="flex justify-between py-2 last:pb-0 text-[14px] font-bold">
+                <div className="flex justify-between gap-3 py-2.5 font-semibold">
                   <dt>Penjualan bersih</dt>
                   <dd className="tnum text-ink">{formatIDR(salesNet)}</dd>
                 </div>
               </dl>
-              {channelMap.size > 0 && (
+              {salesByChannel.length > 0 && (
                 <>
-                  <p className="mt-3 border-t border-line pt-2 text-[12.5px] font-semibold text-ink-3">Per tempat jualan</p>
-                  <div className="divide-y divide-line">{catRows(channelMap)}</div>
+                  <p className="border-t border-line-strong pb-0.5 pt-3 text-[14px] font-semibold text-ink-2">Per tempat jualan</p>
+                  <div className="divide-y divide-line pb-1">{catRows(salesByChannel)}</div>
                 </>
               )}
             </Card>
@@ -216,23 +192,24 @@ export default async function ReportsPage({ searchParams }: PageProps<"/reports"
 
           {/* Piutang & Persediaan */}
           <section>
-            <p className="label mb-2">Piutang &amp; Nilai Persediaan</p>
-            <Card>
-              <dl className="flex flex-col divide-y divide-line text-[13.5px]">
-                <div className="flex justify-between py-2 first:pt-0">
+            <SectionTitle>Belum lunas dan nilai stok</SectionTitle>
+            <Card className="!py-1">
+              <dl className="flex flex-col divide-y divide-line text-[15px]">
+                <div className="flex justify-between gap-3 py-2.5">
                   <dt className="text-ink-2">Tagihan belum lunas</dt>
                   <dd className="tnum font-medium text-clay">
-                    {formatIDR(receivableTotal)} <span className="text-ink-3">({receivableCount})</span>
+                    {formatIDR(r.totalReceivable)} <span className="text-ink-3">· {r.receivables.length} tagihan</span>
                   </dd>
                 </div>
-                <div className="flex justify-between py-2 last:pb-0">
-                  <dt className="text-ink-2">Nilai persediaan (stok × harga jual)</dt>
-                  <dd className="tnum font-medium text-ink">{formatIDR(inventoryValue)}</dd>
+                <div className="flex justify-between gap-3 py-2.5">
+                  <dt className="text-ink-2">Nilai stok (stok × harga jual)</dt>
+                  <dd className="tnum font-medium text-ink">{formatIDR(r.totalInventoryValue)}</dd>
                 </div>
               </dl>
             </Card>
           </section>
 
+          <SectionTitle>Unduh laporan</SectionTitle>
           <div className="grid grid-cols-2 gap-2.5">
             <a href={`/api/reports/pdf?${downloadQuery}&download=1`} className="btn btn-primary">
               <IconDownload className="h-[18px] w-[18px]" strokeWidth={2} />
@@ -240,22 +217,15 @@ export default async function ReportsPage({ searchParams }: PageProps<"/reports"
             </a>
             <a href={`/api/reports/export?${downloadQuery}`} className="btn btn-secondary">
               <IconDownload className="h-[18px] w-[18px]" strokeWidth={2} />
-              Unduh Excel (.xlsx)
+              Unduh Excel
             </a>
           </div>
-          <p className="text-help -mt-2 text-center">
-            PDF berisi laporan lengkap (laba rugi, arus kas, penjualan, piutang, persediaan). Excel (.xlsx) berisi
-            rincian penjualan per baris — file Excel asli, bisa langsung dibuka tanpa peringatan format.
+          <p className="text-help mt-2.5">
+            PDF berisi seluruh laporan di halaman ini. Excel berisi rincian penjualan per baris.
           </p>
         </div>
       )}
 
-      <div className="mt-6">
-        <Callout>
-          &quot;Laba bersih&quot; adalah uang yang benar-benar jadi milikmu setelah semua pengeluaran. Kalau angkanya
-          merah, harga jual atau biaya produksi perlu ditinjau.
-        </Callout>
-      </div>
     </>
   );
 }

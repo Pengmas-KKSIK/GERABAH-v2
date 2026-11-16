@@ -2,19 +2,33 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { flash } from "@/lib/flash";
 import { prisma } from "@/lib/prisma";
-import { ORDER_STATUS_FLOW, orderStatusLabel } from "@/lib/labels";
+import { orderStatusLabel } from "@/lib/labels";
 import { formatIDRPlain } from "@/lib/format";
+import { takeStock } from "@/lib/stock";
+import { canChangeOrderStatus, isOrderOpen } from "@/lib/domain/order-status";
+import { effectiveUnitPrice, orderPayment, paymentStatusFor, totals } from "@/lib/domain/payment";
 import {
   type FormState,
+  UserError,
   run,
   requireBusiness,
   findOrCreateChannel,
   salesIncomeCategoryId,
+  ownCustomerId,
   parseAmount,
+  parseDateField,
   parseItems,
+  sumQtyByProduct,
+  text,
   logActivity,
 } from "./_helpers";
+
+function revalidateOrderPages(orderId?: string) {
+  if (orderId) revalidatePath(`/orders/${orderId}`);
+  for (const p of ["/orders", "/sales", "/products", "/finance", "/receivables", "/dashboard"]) revalidatePath(p);
+}
 
 export async function createOrder(_prev: FormState, formData: FormData): Promise<FormState> {
   const business = await requireBusiness();
@@ -22,82 +36,94 @@ export async function createOrder(_prev: FormState, formData: FormData): Promise
 
   const res = await run(async () => {
     const items = parseItems(formData.get("items"));
-    const customerId = String(formData.get("customerId") ?? "") || null;
-    const discount = parseAmount(formData.get("discount"));
-    const downPayment = parseAmount(formData.get("downPayment"));
-    const channelName = String(formData.get("channel") ?? "");
-    const dueDateValue = String(formData.get("dueDate") ?? "");
-    const notes = String(formData.get("notes") ?? "").trim();
+    if (items.length === 0) throw new UserError("Pilih minimal satu barang yang dipesan.");
 
-    if (items.length === 0) throw new Error("Pilih minimal satu barang yang dipesan.");
-
+    const productIds = [...new Set(items.map((i) => i.productId))];
     const products = await prisma.product.findMany({
-      where: { id: { in: [...new Set(items.map((i) => i.productId))] }, businessId: business.id },
+      where: { id: { in: productIds }, businessId: business.id, status: { not: "inactive" } },
     });
     const byId = new Map(products.map((p) => [p.id, p]));
-    if (byId.size !== new Set(items.map((i) => i.productId)).size) throw new Error("Ada produk yang tidak ditemukan.");
+    if (byId.size !== productIds.length) throw new UserError("Ada produk yang tidak ditemukan atau sudah diarsipkan.");
 
-    const lineItems = items.map((i, idx) => {
-      const p = byId.get(i.productId)!;
-      const unit = i.unitPrice > 0 ? i.unitPrice : p.sellingPrice;
-      // diskon keseluruhan disimpan di baris pertama
-      return { productId: i.productId, quantity: i.quantity, price: unit, discount: idx === 0 ? discount : 0 };
-    });
+    const priced = items.map((i) => ({
+      productId: i.productId,
+      quantity: i.quantity,
+      unitPrice: effectiveUnitPrice(i.unitPrice, byId.get(i.productId)!.sellingPrice),
+    }));
+    const { discount, total } = totals(priced, parseAmount(formData.get("discount")));
+    const payment = orderPayment(total, parseAmount(formData.get("downPayment")));
+    const notes = text(formData.get("notes"));
 
-    const gross = lineItems.reduce((s, i) => s + i.quantity * i.price, 0);
-    const total = Math.max(gross - discount, 0);
-    const remainingPayment = Math.max(total - downPayment, 0);
-    const paymentStatus = remainingPayment <= 0 ? "Paid" : downPayment > 0 ? "Partially Paid" : "Unpaid";
-    const channelId = channelName ? await findOrCreateChannel(business.id, channelName) : null;
+    const [customerId, channelId] = await Promise.all([
+      ownCustomerId(business.id, text(formData.get("customerId"))),
+      findOrCreateChannel(business.id, text(formData.get("channel"))),
+    ]);
 
     const order = await prisma.order.create({
       data: {
         businessId: business.id,
-        customerId: customerId ?? undefined,
-        channelId: channelId ?? undefined,
+        customerId,
+        channelId,
         status: "New",
-        paymentStatus,
-        downPayment,
-        remainingPayment,
+        ...payment,
         total,
-        dueDate: dueDateValue ? new Date(dueDateValue) : undefined,
-        notes: notes || undefined,
-        items: { create: lineItems },
+        dueDate: parseDateField(formData.get("dueDate")),
+        notes: notes || null,
+        // diskon keseluruhan disimpan di baris pertama
+        items: {
+          create: priced.map((p, idx) => ({
+            productId: p.productId,
+            quantity: p.quantity,
+            price: p.unitPrice,
+            discount: idx === 0 ? discount : 0,
+          })),
+        },
       },
     });
     newId = order.id;
+    const first = byId.get(items[0].productId)!.name;
     await logActivity(
       business.id,
       "order.create",
-      `Buat pesanan ${byId.get(items[0].productId)!.name}${items.length > 1 ? ` + ${items.length - 1} barang lain` : ""} — ${formatIDRPlain(total)}`
+      `Buat pesanan ${first}${items.length > 1 ? ` + ${items.length - 1} barang lain` : ""} — ${formatIDRPlain(total)}`
     );
   });
 
   if (res.error) return res;
   revalidatePath("/orders");
   revalidatePath("/dashboard");
+  await flash("Pesanan dibuat");
   redirect(`/orders/${newId}`);
 }
 
 export async function advanceOrderStatus(_prev: FormState, formData: FormData): Promise<FormState> {
   const business = await requireBusiness();
-  const orderId = String(formData.get("id") ?? "");
-  const nextStatus = String(formData.get("status") ?? "");
+  const orderId = text(formData.get("id"));
+  const nextStatus = text(formData.get("status"));
 
   const res = await run(async () => {
-    const valid = ORDER_STATUS_FLOW.includes(nextStatus as (typeof ORDER_STATUS_FLOW)[number]);
-    if (!valid && nextStatus !== "Cancelled") throw new Error("Status tidak valid.");
-
     const order = await prisma.order.findFirst({
       where: { id: orderId, businessId: business.id },
       include: { customer: true },
     });
-    if (!order) throw new Error("Pesanan tidak ditemukan.");
+    if (!order) throw new UserError("Pesanan tidak ditemukan.");
+    if (!canChangeOrderStatus(order.status, nextStatus)) {
+      throw new UserError(
+        isOrderOpen(order.status)
+          ? "Status tidak valid."
+          : `Pesanan ini sudah ${orderStatusLabel(order.status).toLowerCase()}. Muat ulang halaman.`
+      );
+    }
 
     if (nextStatus === "Completed") {
-      await completeOrderInner(orderId);
+      await completeOrder(order.id);
     } else {
-      await prisma.order.update({ where: { id: orderId }, data: { status: nextStatus } });
+      // Bersyarat pada status lama: dua klik bersamaan tidak saling menimpa.
+      const { count } = await prisma.order.updateMany({
+        where: { id: order.id, status: order.status },
+        data: { status: nextStatus },
+      });
+      if (count === 0) throw new UserError("Status pesanan baru saja berubah. Muat ulang halaman.");
     }
 
     const who = order.customer?.name ?? "tanpa nama";
@@ -113,32 +139,23 @@ export async function advanceOrderStatus(_prev: FormState, formData: FormData): 
   });
 
   if (res.error) return res;
-  revalidatePath(`/orders/${orderId}`);
-  revalidatePath("/orders");
-  revalidatePath("/sales");
-  revalidatePath("/products");
-  revalidatePath("/finance");
-  revalidatePath("/dashboard");
+  revalidateOrderPages(orderId);
   return { ok: true };
 }
 
-async function completeOrderInner(orderId: string) {
+/** Pesanan selesai → jadi penjualan: stok berkurang, uang yang sudah diterima masuk Keuangan. */
+async function completeOrder(orderId: string) {
   const order = await prisma.order.findUnique({
     where: { id: orderId },
     include: { items: { include: { product: true } } },
   });
-  if (!order) throw new Error("Pesanan tidak ditemukan.");
-  if (order.items.length === 0) throw new Error("Pesanan tidak punya item.");
+  if (!order) throw new UserError("Pesanan tidak ditemukan.");
+  if (order.items.length === 0) throw new UserError("Pesanan tidak punya barang.");
 
-  const qtyByProduct = new Map<string, number>();
-  for (const it of order.items) qtyByProduct.set(it.productId, (qtyByProduct.get(it.productId) ?? 0) + it.quantity);
-
-  const productById = new Map(order.items.map((it) => [it.productId, it.product]));
+  const qtyByProduct = sumQtyByProduct(order.items);
   for (const [productId, qty] of qtyByProduct) {
-    const p = productById.get(productId)!;
-    if (qty > p.stock) {
-      throw new Error(`Stok ${p.name} tidak cukup — tersisa ${p.stock}, dibutuhkan ${qty}. Tambah stok dulu.`);
-    }
+    const p = order.items.find((it) => it.productId === productId)!.product;
+    if (qty > p.stock) throw new UserError(`Stok ${p.name} tidak cukup — tersisa ${p.stock}, dibutuhkan ${qty}. Tambah stok dulu.`);
   }
 
   const incomeCategoryId = await salesIncomeCategoryId(order.businessId);
@@ -152,17 +169,24 @@ async function completeOrderInner(orderId: string) {
       : `Penjualan ${firstName} + ${order.items.length - 1} barang lain (dari Pesanan)`;
 
   await prisma.$transaction(async (tx) => {
+    // Kunci status dulu: kalau pesanan sudah selesai/dibatalkan di tab lain, batalkan semuanya.
+    const { count } = await tx.order.updateMany({
+      where: { id: order.id, status: order.status },
+      data: { status: "Completed" },
+    });
+    if (count === 0) throw new UserError("Pesanan ini baru saja diproses. Muat ulang halaman.");
+
     const sale = await tx.sale.create({
       data: {
         businessId: order.businessId,
-        customerId: order.customerId ?? undefined,
-        channelId: order.channelId ?? undefined,
+        customerId: order.customerId,
+        channelId: order.channelId,
         subtotal,
         discount,
         total: order.total,
         amountPaid: amountReceived,
         outstandingBalance: order.remainingPayment,
-        paymentStatus: order.paymentStatus,
+        paymentStatus: paymentStatusFor(order.total, amountReceived),
         orderId: order.id,
         items: {
           create: order.items.map((it) => ({
@@ -175,16 +199,7 @@ async function completeOrderInner(orderId: string) {
       },
     });
 
-    for (const [productId, qty] of qtyByProduct) {
-      const p = productById.get(productId)!;
-      await tx.product.update({
-        where: { id: productId },
-        data: {
-          stock: { decrement: qty },
-          status: p.stock - qty <= 0 ? "out_of_stock" : "active",
-        },
-      });
-    }
+    for (const [productId, qty] of qtyByProduct) await takeStock(tx, productId, qty);
 
     if (amountReceived > 0) {
       await tx.financialTransaction.create({
@@ -198,31 +213,38 @@ async function completeOrderInner(orderId: string) {
         },
       });
     }
-
-    await tx.order.update({ where: { id: order.id }, data: { status: "Completed" } });
   });
 }
 
 export async function recordOrderPayment(_prev: FormState, formData: FormData): Promise<FormState> {
   const business = await requireBusiness();
-  const orderId = String(formData.get("orderId") ?? "");
+  const orderId = text(formData.get("orderId"));
 
   const res = await run(async () => {
     const amount = parseAmount(formData.get("amount"));
-    const order = await prisma.order.findUnique({ where: { id: orderId }, include: { customer: true } });
-    if (!order) throw new Error("Pesanan tidak ditemukan.");
-    if (amount <= 0) throw new Error("Isi jumlah pembayaran.");
-    if (amount > order.remainingPayment) throw new Error("Jumlah melebihi sisa tagihan.");
+    const order = await prisma.order.findFirst({
+      where: { id: orderId, businessId: business.id },
+      include: { customer: true },
+    });
+    if (!order) throw new UserError("Pesanan tidak ditemukan.");
+    if (!isOrderOpen(order.status)) {
+      throw new UserError("Pesanan ini sudah selesai atau dibatalkan. Catat pelunasan lewat halaman penjualannya.");
+    }
+    if (amount <= 0) throw new UserError("Isi jumlah pembayaran.");
+    if (amount > order.remainingPayment) throw new UserError("Jumlah melebihi sisa tagihan.");
 
     const newRemaining = order.remainingPayment - amount;
-    await prisma.order.update({
-      where: { id: orderId },
+    // Bersyarat pada sisa lama: dua pembayaran bersamaan tidak bisa membuat sisa minus.
+    const { count } = await prisma.order.updateMany({
+      where: { id: order.id, remainingPayment: order.remainingPayment, status: order.status },
       data: {
         downPayment: order.downPayment + amount,
         remainingPayment: newRemaining,
-        paymentStatus: newRemaining <= 0 ? "Paid" : "Partially Paid",
+        paymentStatus: paymentStatusFor(order.total, order.total - newRemaining),
       },
     });
+    if (count === 0) throw new UserError("Pesanan baru saja berubah. Muat ulang halaman lalu coba lagi.");
+
     await logActivity(
       business.id,
       "order.payment",
@@ -231,7 +253,6 @@ export async function recordOrderPayment(_prev: FormState, formData: FormData): 
   });
 
   if (res.error) return res;
-  revalidatePath(`/orders/${orderId}`);
-  revalidatePath("/orders");
+  revalidateOrderPages(orderId);
   return { ok: true };
 }

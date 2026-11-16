@@ -2,20 +2,32 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { flash } from "@/lib/flash";
 import { prisma } from "@/lib/prisma";
 import { formatIDRPlain } from "@/lib/format";
+import { takeStock } from "@/lib/stock";
+import { effectiveUnitPrice, salePayment, totals } from "@/lib/domain/payment";
 import {
   type FormState,
+  UserError,
   run,
   requireBusiness,
   findOrCreateChannel,
   findOrCreatePaymentMethod,
   salesIncomeCategoryId,
+  ownCustomerId,
   parseAmount,
+  parseTransactionDate,
   parseItems,
   sumQtyByProduct,
+  text,
   logActivity,
 } from "./_helpers";
+
+function describeItems(names: string[], suffix = "") {
+  const base = names.length === 1 ? `Penjualan ${names[0]}` : `Penjualan ${names[0]} + ${names.length - 1} barang lain`;
+  return base + suffix;
+}
 
 export async function createSale(_prev: FormState, formData: FormData): Promise<FormState> {
   const business = await requireBusiness();
@@ -23,48 +35,35 @@ export async function createSale(_prev: FormState, formData: FormData): Promise<
 
   const res = await run(async () => {
     const items = parseItems(formData.get("items"));
-    const customerId = String(formData.get("customerId") ?? "") || null;
-    const discount = parseAmount(formData.get("discount"));
-    const channelName = String(formData.get("channel") ?? "");
-    const paymentMethodName = String(formData.get("paymentMethod") ?? "");
-    const paymentStatus = String(formData.get("paymentStatus") ?? "Paid");
-    const amountPaidInput = parseAmount(formData.get("amountPaid"));
-    const notes = String(formData.get("notes") ?? "").trim();
-    const dateValue = String(formData.get("date") ?? "");
+    if (items.length === 0) throw new UserError("Pilih minimal satu barang yang dijual.");
 
-    if (items.length === 0) throw new Error("Pilih minimal satu barang yang dijual.");
-
+    const productIds = [...new Set(items.map((i) => i.productId))];
     const products = await prisma.product.findMany({
-      where: { id: { in: [...new Set(items.map((i) => i.productId))] }, businessId: business.id },
+      where: { id: { in: productIds }, businessId: business.id, status: { not: "inactive" } },
     });
     const byId = new Map(products.map((p) => [p.id, p]));
-    if (byId.size !== new Set(items.map((i) => i.productId)).size) throw new Error("Ada produk yang tidak ditemukan.");
+    if (byId.size !== productIds.length) throw new UserError("Ada produk yang tidak ditemukan atau sudah diarsipkan.");
 
+    // Cek awal agar pesan ramah; pengaman sebenarnya ada di takeStock (atomik, dalam transaksi).
     for (const [productId, qty] of sumQtyByProduct(items)) {
       const p = byId.get(productId)!;
-      if (qty > p.stock) throw new Error(`Stok ${p.name} tidak cukup — tersisa ${p.stock}, dibutuhkan ${qty}.`);
+      if (qty > p.stock) throw new UserError(`Stok ${p.name} tidak cukup — tersisa ${p.stock}, dibutuhkan ${qty}.`);
     }
 
     const lineItems = items.map((i) => {
-      const p = byId.get(i.productId)!;
-      const price = i.unitPrice > 0 ? i.unitPrice : p.sellingPrice;
-      return { productId: i.productId, quantity: i.quantity, unitPrice: price, lineTotal: i.quantity * price };
+      const unitPrice = effectiveUnitPrice(i.unitPrice, byId.get(i.productId)!.sellingPrice);
+      return { productId: i.productId, quantity: i.quantity, unitPrice, lineTotal: i.quantity * unitPrice };
     });
+    const { subtotal, discount, total } = totals(lineItems, parseAmount(formData.get("discount")));
+    const payment = salePayment(total, text(formData.get("paymentStatus")), parseAmount(formData.get("amountPaid")));
+    const when = parseTransactionDate(formData.get("date"));
+    const notes = text(formData.get("notes"));
+    const description = describeItems(items.map((i) => byId.get(i.productId)!.name));
 
-    const subtotal = lineItems.reduce((s, i) => s + i.lineTotal, 0);
-    const total = Math.max(subtotal - discount, 0);
-    const amountPaid =
-      paymentStatus === "Paid" ? total : paymentStatus === "Unpaid" ? 0 : Math.min(amountPaidInput, total);
-    const outstandingBalance = total - amountPaid;
-    const when = dateValue ? new Date(dateValue) : new Date();
-
-    const firstName = byId.get(items[0].productId)!.name;
-    const description =
-      items.length === 1 ? `Penjualan ${firstName}` : `Penjualan ${firstName} + ${items.length - 1} barang lain`;
-
-    const [channelId, paymentMethodId, incomeCategoryId] = await Promise.all([
-      channelName ? findOrCreateChannel(business.id, channelName) : Promise.resolve(null),
-      paymentMethodName ? findOrCreatePaymentMethod(business.id, paymentMethodName) : Promise.resolve(null),
+    const [customerId, channelId, paymentMethodId, incomeCategoryId] = await Promise.all([
+      ownCustomerId(business.id, text(formData.get("customerId"))),
+      findOrCreateChannel(business.id, text(formData.get("channel"))),
+      findOrCreatePaymentMethod(business.id, text(formData.get("paymentMethod"))),
       salesIncomeCategoryId(business.id),
     ]);
 
@@ -72,41 +71,30 @@ export async function createSale(_prev: FormState, formData: FormData): Promise<
       const created = await tx.sale.create({
         data: {
           businessId: business.id,
-          customerId: customerId ?? undefined,
-          channelId: channelId ?? undefined,
+          customerId,
+          channelId,
           date: when,
           subtotal,
           discount,
           total,
-          amountPaid,
-          outstandingBalance,
-          paymentStatus,
-          paymentMethodId: paymentMethodId ?? undefined,
-          notes: notes || undefined,
+          ...payment,
+          paymentMethodId,
+          notes: notes || null,
           items: { create: lineItems },
         },
       });
 
-      for (const [productId, qty] of sumQtyByProduct(items)) {
-        const p = byId.get(productId)!;
-        await tx.product.update({
-          where: { id: productId },
-          data: {
-            stock: { decrement: qty },
-            status: p.stock - qty <= 0 ? "out_of_stock" : "active",
-          },
-        });
-      }
+      for (const [productId, qty] of sumQtyByProduct(items)) await takeStock(tx, productId, qty);
 
-      if (amountPaid > 0) {
+      if (payment.amountPaid > 0) {
         await tx.financialTransaction.create({
           data: {
             businessId: business.id,
             type: "INCOME",
             incomeCategoryId,
             description,
-            amount: amountPaid,
-            paymentMethodId: paymentMethodId ?? undefined,
+            amount: payment.amountPaid,
+            paymentMethodId,
             relatedSaleId: created.id,
             date: when,
           },
@@ -123,39 +111,60 @@ export async function createSale(_prev: FormState, formData: FormData): Promise<
   revalidatePath("/products");
   revalidatePath("/finance");
   revalidatePath("/dashboard");
+  await flash("Penjualan tersimpan");
   redirect(`/sales/${newId}`);
 }
 
 export async function markSalePaid(_prev: FormState, formData: FormData): Promise<FormState> {
   const business = await requireBusiness();
-  const saleId = String(formData.get("id") ?? "");
+  const saleId = text(formData.get("id"));
+  let remaining = 0;
 
   const res = await run(async () => {
-    const sale = await prisma.sale.findUnique({ where: { id: saleId } });
-    if (!sale || sale.businessId !== business.id) throw new Error("Penjualan tidak ditemukan.");
-    const remaining = sale.outstandingBalance;
-    if (remaining <= 0) return;
+    const sale = await prisma.sale.findFirst({ where: { id: saleId, businessId: business.id } });
+    if (!sale) throw new UserError("Penjualan tidak ditemukan.");
+    if (sale.outstandingBalance <= 0) return;
+    remaining = sale.outstandingBalance;
+    const incomeCategoryId = await salesIncomeCategoryId(business.id);
 
-    await prisma.$transaction([
-      prisma.sale.update({
-        where: { id: saleId },
+    const paid = await prisma.$transaction(async (tx) => {
+      // Bersyarat: klik ganda / dua tab tidak bisa mencatat pelunasan dua kali.
+      const { count } = await tx.sale.updateMany({
+        where: { id: sale.id, outstandingBalance: { gt: 0 } },
         data: { amountPaid: sale.total, outstandingBalance: 0, paymentStatus: "Paid" },
-      }),
-      prisma.financialTransaction.create({
+      });
+      if (count === 0) return false;
+
+      await tx.financialTransaction.create({
         data: {
-          businessId: sale.businessId,
+          businessId: business.id,
           type: "INCOME",
+          incomeCategoryId,
           description: "Pelunasan penjualan",
           amount: remaining,
+          paymentMethodId: sale.paymentMethodId,
           relatedSaleId: sale.id,
         },
-      }),
-    ]);
-    await logActivity(business.id, "sale.paid", `Tandai penjualan lunas — pelunasan ${formatIDRPlain(remaining)}`);
+      });
+      // Penjualan dari pesanan: pesanan aslinya ikut lunas supaya tidak tampil sebagai tagihan.
+      if (sale.orderId) {
+        await tx.order.update({
+          where: { id: sale.orderId },
+          data: { remainingPayment: 0, downPayment: sale.total, paymentStatus: "Paid" },
+        });
+      }
+      return true;
+    });
+    if (paid) {
+      await logActivity(business.id, "sale.paid", `Tandai penjualan lunas — pelunasan ${formatIDRPlain(remaining)}`);
+    }
   });
 
   if (res.error) return res;
   revalidatePath(`/sales/${saleId}`);
+  revalidatePath("/sales");
+  revalidatePath("/orders");
+  revalidatePath("/receivables");
   revalidatePath("/finance");
   revalidatePath("/dashboard");
   return { ok: true };

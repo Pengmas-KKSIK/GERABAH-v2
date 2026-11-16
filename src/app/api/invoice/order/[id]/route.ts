@@ -3,6 +3,7 @@ import { getCurrentBusiness } from "@/lib/current-user";
 import { invoiceNumber } from "@/lib/format";
 import { paymentStatusLabel } from "@/lib/labels";
 import { invoicePdfResponse } from "@/lib/invoice-response";
+import { orderBalance } from "@/lib/receivables";
 
 export async function GET(request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -15,12 +16,14 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       customer: true,
       channel: true,
       items: { include: { product: true } },
+      sale: true,
     },
   });
   if (!order) return new Response("Pesanan tidak ditemukan.", { status: 404 });
 
   const owner = await prisma.user.findUnique({ where: { id: business.ownerId } });
   const download = new URL(request.url).searchParams.get("download") === "1";
+  const balance = orderBalance(order);
 
   const items = order.items.map((i) => ({
     name: i.product.name,
@@ -52,10 +55,10 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
       subtotal,
       discount,
       total: order.total,
-      paid: order.downPayment,
-      outstanding: order.remainingPayment,
-      statusLabel: paymentStatusLabel(order.paymentStatus),
-      paidInFull: order.remainingPayment <= 0,
+      paid: balance.paid,
+      outstanding: balance.remaining,
+      statusLabel: paymentStatusLabel(balance.status),
+      paidInFull: balance.remaining <= 0,
       channel: order.channel?.name,
       notes: order.notes,
     },

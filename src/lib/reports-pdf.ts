@@ -1,6 +1,7 @@
 import { PDFDocument, StandardFonts, type PDFFont, type Color } from "pdf-lib";
 import { formatIDRPlain, formatDateLong } from "@/lib/format";
 import { INK, MUTED, RULE, BAND, ACCENT, SAGE, PAGE_W, PAGE_H, MARGIN, san, wrap } from "@/lib/pdf-kit";
+import { APP_NAME } from "@/lib/brand";
 
 export type CatAmount = { name: string; amount: number };
 
@@ -38,8 +39,8 @@ const CONTENT_W = PAGE_W - M * 2;
 export async function buildFinancialReportPdf(d: FinancialReportData): Promise<Uint8Array> {
   const pdf = await PDFDocument.create();
   pdf.setTitle(`Laporan Keuangan ${d.businessName}`);
-  pdf.setProducer("GERABAH");
-  pdf.setCreator("GERABAH");
+  pdf.setProducer(APP_NAME);
+  pdf.setCreator(APP_NAME);
 
   const regular = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
@@ -71,7 +72,7 @@ export async function buildFinancialReportPdf(d: FinancialReportData): Promise<U
   };
 
   const footer = () => {
-    draw("Dibuat dengan GERABAH", M, M - 18, { size: 8, color: MUTED });
+    draw(`Dibuat dengan ${APP_NAME}`, M, M - 18, { size: 8, color: MUTED });
     drawRight(`Halaman ${pageNo}`, PAGE_W - M, M - 18, { size: 8, color: MUTED });
   };
 

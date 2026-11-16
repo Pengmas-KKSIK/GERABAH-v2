@@ -7,7 +7,7 @@ import { Card, Callout } from "./ui";
 import { ActionForm, SubmitButton } from "./form";
 import { PhotoInput } from "./photo-input";
 import { MaterialsEditor, type MaterialRow } from "./materials-editor";
-import type { FormState } from "@/lib/actions/_helpers";
+import type { FormState } from "@/lib/action-state";
 
 type Action = (prev: FormState, formData: FormData) => Promise<FormState>;
 
@@ -70,24 +70,25 @@ export function ProductForm({
       {pendingChange && (
         <Callout tone="warn">
           Perubahan harga jadi <strong>{formatIDR(pendingChange.newValue)}</strong> (diajukan{" "}
-          {pendingChange.requestedByName}) sedang menunggu persetujuan owner. Harga yang tampil ke pembeli masih harga
+          {pendingChange.requestedByName}) sedang menunggu persetujuan pemilik. Harga yang tampil ke pembeli masih harga
           lama sampai disetujui.{" "}
-          <Link href="/approvals" className="underline">
+          <Link href="/approvals" className="font-semibold underline">
             Lihat di Persetujuan
           </Link>
           .
         </Callout>
       )}
 
+      <h2 className="form-section">Info produk</h2>
       <Card>
         <div className="flex flex-col gap-4">
           <PhotoInput current={initial.photoUrl} />
           <label className="block">
-            <span className="mb-1.5 block text-[14px] font-medium text-ink-2">Nama produk</span>
+            <span className="field-label">Nama produk</span>
             <input name="name" required defaultValue={initial.name} className="field" placeholder="mis. Vas Bunga Motif Batik" />
           </label>
           <label className="block">
-            <span className="mb-1.5 block text-[14px] font-medium text-ink-2">Kategori</span>
+            <span className="field-label">Kategori</span>
             <input name="category" list="prodcat" defaultValue={initial.category ?? ""} className="field" placeholder="Pilih atau ketik baru" />
             <datalist id="prodcat">
               {categories.map((c) => (
@@ -96,82 +97,100 @@ export function ProductForm({
             </datalist>
           </label>
           <label className="block">
-            <span className="mb-1.5 block text-[14px] font-medium text-ink-2">Bahan (opsional)</span>
+            <span className="field-label">Bahan (opsional)</span>
             <input name="material" defaultValue={initial.material ?? ""} className="field" placeholder="mis. Tanah liat Plered, glasir bening" />
           </label>
           <label className="block">
-            <span className="mb-1.5 block text-[14px] font-medium text-ink-2">Deskripsi (opsional)</span>
+            <span className="field-label">Deskripsi (opsional)</span>
             <textarea name="description" rows={2} defaultValue={initial.description ?? ""} className="field" />
           </label>
         </div>
       </Card>
 
+      <h2 className="form-section">Bahan baku per barang</h2>
       <Card>
-        <p className="label mb-3">Rincian Bahan Baku</p>
         <MaterialsEditor value={materials} onChange={setMaterials} />
       </Card>
 
+      <h2 className="form-section">Biaya lain per barang</h2>
       <Card>
-        <p className="label mb-3">Biaya Lain per Barang</p>
-        <div className="flex flex-col gap-3">
-          <label className="flex items-center gap-3">
-            <span className="w-24 shrink-0 text-[13px] text-ink-2">Kemasan</span>
+        <div className="flex flex-col gap-4">
+          <label className="block">
+            <span className="field-label">Kemasan</span>
             <input type="hidden" name="packagingCost" value={packagingCost || ""} readOnly />
-            <input
-              inputMode="numeric"
-              defaultValue={packagingCost ? new Intl.NumberFormat("id-ID").format(packagingCost) : ""}
-              onChange={(e) => {
-                const v = num(e.target.value);
-                e.target.value = v ? new Intl.NumberFormat("id-ID").format(v) : "";
-                setPackagingCost(v);
-              }}
-              placeholder="0"
-              className="field tnum flex-1 !min-h-[44px] text-right"
-            />
+            <div className="relative">
+              <span aria-hidden className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 font-semibold text-ink-3">Rp</span>
+              <input
+                inputMode="numeric"
+                defaultValue={packagingCost ? new Intl.NumberFormat("id-ID").format(packagingCost) : ""}
+                onChange={(e) => {
+                  const v = num(e.target.value);
+                  e.target.value = v ? new Intl.NumberFormat("id-ID").format(v) : "";
+                  setPackagingCost(v);
+                }}
+                placeholder="0"
+                className="field tnum !pl-10 font-semibold"
+              />
+            </div>
           </label>
-          <div className="flex items-center gap-3">
-            <input
-              name="otherCostCategory"
-              list="othercat"
-              defaultValue={initial.costs?.otherCostCategory ?? ""}
-              placeholder="Kategori lain-lain"
-              className="field !min-h-[44px] w-24 shrink-0 !text-[13px]"
-            />
-            <datalist id="othercat">
-              {otherCostCategories.map((c) => (
-                <option key={c} value={c} />
-              ))}
-            </datalist>
-            <input type="hidden" name="otherCost" value={otherCost || ""} readOnly />
-            <input
-              inputMode="numeric"
-              defaultValue={otherCost ? new Intl.NumberFormat("id-ID").format(otherCost) : ""}
-              onChange={(e) => {
-                const v = num(e.target.value);
-                e.target.value = v ? new Intl.NumberFormat("id-ID").format(v) : "";
-                setOtherCost(v);
-              }}
-              placeholder="0"
-              className="field tnum flex-1 !min-h-[44px] text-right"
-            />
+          <div className="grid gap-3 min-[420px]:grid-cols-2">
+            <label className="block">
+              <span className="field-label">Biaya lain-lain</span>
+              <input
+                name="otherCostCategory"
+                list="othercat"
+                defaultValue={initial.costs?.otherCostCategory ?? ""}
+                placeholder="mis. Listrik produksi"
+                className="field"
+              />
+              <datalist id="othercat">
+                {otherCostCategories.map((c) => (
+                  <option key={c} value={c} />
+                ))}
+              </datalist>
+            </label>
+            <label className="block">
+              <span className="field-label">Jumlahnya</span>
+              <input type="hidden" name="otherCost" value={otherCost || ""} readOnly />
+              <div className="relative">
+                <span aria-hidden className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 font-semibold text-ink-3">Rp</span>
+                <input
+                  inputMode="numeric"
+                  defaultValue={otherCost ? new Intl.NumberFormat("id-ID").format(otherCost) : ""}
+                  onChange={(e) => {
+                    const v = num(e.target.value);
+                    e.target.value = v ? new Intl.NumberFormat("id-ID").format(v) : "";
+                    setOtherCost(v);
+                  }}
+                  placeholder="0"
+                  className="field tnum !pl-10 font-semibold"
+                />
+              </div>
+            </label>
           </div>
           <p className="text-help">
-            Ketik nama kategori sendiri (mis. &quot;Listrik produksi&quot;, &quot;Ongkir bahan&quot;) atau pilih yang sudah ada. Biaya
-            tenaga kerja bulanan diatur di menu <Link href="/assets" className="underline">Aset &amp; Biaya Tetap</Link>,
-            bukan di sini.
+            Ketik nama biaya sendiri atau pilih yang sudah ada. Gaji/tenaga kerja bulanan dicatat di{" "}
+            <Link href="/assets" className="link">
+              Aset &amp; Biaya Tetap
+            </Link>
+            , bukan di sini.
           </p>
         </div>
       </Card>
 
+      <h2 className="form-section">Harga jual</h2>
       <Card>
-        <span className="mb-2 block text-[14px] font-medium text-ink-2">Harga jual</span>
+        <label htmlFor="selling-price" className="sr-only">
+          Harga jual
+        </label>
         {isStaff && isEdit && (
-          <p className="text-help mb-2">Perubahan harga produk yang sudah ada perlu disetujui owner dulu.</p>
+          <p className="text-help mb-2">Perubahan harga produk yang sudah ada perlu disetujui pemilik dulu.</p>
         )}
         <input type="hidden" name="sellingPrice" value={price || ""} readOnly />
         <div className="relative">
-          <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[22px] font-semibold text-ink-3">Rp</span>
+          <span aria-hidden className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-[22px] font-semibold text-ink-3">Rp</span>
           <input
+            id="selling-price"
             inputMode="numeric"
             defaultValue={price ? new Intl.NumberFormat("id-ID").format(price) : ""}
             onChange={(e) => {
@@ -180,18 +199,18 @@ export function ProductForm({
               setPrice(v);
             }}
             placeholder="0"
-            className="field tnum !min-h-[64px] !pl-11 !text-[26px] font-semibold text-ink"
+            className="field tnum !min-h-[64px] !pl-12 !text-[26px] font-semibold text-ink"
           />
         </div>
 
         {totalCost > 0 && (
           <div className="mt-3 rounded-[var(--radius-md)] bg-surface-2 p-3">
-            <div className="flex justify-between text-[13px] text-ink-2">
-              <span>Total biaya (bahan + kemasan + lain-lain)</span>
+            <div className="flex justify-between gap-3 text-[14px] text-ink-2">
+              <span>Total biaya per barang</span>
               <span className="tnum">{formatIDR(totalCost)}</span>
             </div>
             {price > 0 && (
-              <div className="mt-1 flex justify-between text-[14px] font-semibold">
+              <div className="mt-1 flex justify-between text-[15px] font-semibold">
                 <span className={profit >= 0 ? "text-good" : "text-bad"}>
                   {profit >= 0 ? "Untung" : "Rugi"} per barang
                 </span>
@@ -202,7 +221,7 @@ export function ProductForm({
             )}
 
             <div className="mt-3 flex items-center justify-between gap-3 border-t border-line pt-3">
-              <label className="flex items-center gap-2 text-[13px] text-ink-2">
+              <label className="flex items-center gap-2 text-[14px] text-ink-2">
                 Target untung
                 <input
                   type="number"
@@ -211,30 +230,29 @@ export function ProductForm({
                   max={95}
                   value={margin}
                   onChange={(e) => setMargin(Math.max(0, Math.min(95, Number(e.target.value) || 0)))}
-                  className="field tnum !min-h-[34px] !w-16 !py-1 text-center"
+                  className="field tnum !min-h-[44px] !w-20 !py-1 text-center"
                 />
                 %
               </label>
-              <span className="text-[13px] text-ink-3">Rekomendasi</span>
+              <span className="text-[14px] text-ink-3">Harga saran</span>
             </div>
             <p className="mt-1 text-right text-[18px] font-bold text-clay-ink">{formatIDR(recommendedPrice)}</p>
-            <p className="text-help">
-              Sekadar bantuan hitung — harga jual di atas tetap kamu yang isi/ubah sendiri.
-            </p>
+            <p className="text-help">Hanya bantuan hitung. Harga jual tetap kamu yang tentukan.</p>
           </div>
         )}
       </Card>
 
+      <h2 className="form-section">Stok</h2>
       <Card>
         <div className="grid grid-cols-2 gap-3">
           {!isEdit && (
             <label className="block">
-              <span className="mb-1.5 block text-[14px] font-medium text-ink-2">Stok awal</span>
+              <span className="field-label">Stok awal</span>
               <input name="stock" type="number" inputMode="numeric" min={0} defaultValue={initial.stock ?? 0} className="field tnum" />
             </label>
           )}
           <label className="block">
-            <span className="mb-1.5 block text-[14px] font-medium text-ink-2">Batas stok menipis</span>
+            <span className="field-label">Batas stok menipis</span>
             <input name="minStock" type="number" inputMode="numeric" min={0} defaultValue={initial.minStock ?? 0} className="field tnum" />
           </label>
         </div>

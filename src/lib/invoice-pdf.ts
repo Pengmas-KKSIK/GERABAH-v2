@@ -1,6 +1,7 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont } from "pdf-lib";
 import { formatIDRPlain, formatDateLong } from "@/lib/format";
 import { san, wrap } from "@/lib/pdf-kit";
+import { APP_NAME } from "@/lib/brand";
 
 export type InvoiceItem = {
   name: string;
@@ -80,8 +81,8 @@ export function terbilang(amount: number): string {
 export async function buildInvoicePdf(data: InvoiceData): Promise<Uint8Array> {
   const pdf = await PDFDocument.create();
   pdf.setTitle(`${data.kind} ${data.number}`);
-  pdf.setProducer("GERABAH");
-  pdf.setCreator("GERABAH");
+  pdf.setProducer(APP_NAME);
+  pdf.setCreator(APP_NAME);
 
   const regular = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
@@ -284,7 +285,7 @@ export async function buildInvoicePdf(data: InvoiceData): Promise<Uint8Array> {
     footerY,
     { size: 8.5, color: MUTED }
   );
-  rightText("Dibuat dengan GERABAH", PAGE_W - M, footerY, { size: 8.5, color: MUTED });
+  rightText(`Dibuat dengan ${APP_NAME}`, PAGE_W - M, footerY, { size: 8.5, color: MUTED });
 
   return pdf.save();
 }

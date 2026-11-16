@@ -1,13 +1,14 @@
-import Link from "next/link";
 import { prisma } from "@/lib/prisma";
 import { getSessionContext } from "@/lib/current-user";
-import { resolveRange, previousRange, daysFromNow, cashflowBuckets } from "@/lib/date-range";
+import { resolveRange, previousRange, daysFromNow, cashflowBuckets, BUSINESS_TIME_ZONE } from "@/lib/date-range";
+import { loadReceivables } from "@/lib/receivables";
 import { formatIDR, formatIDRCompact, formatDate } from "@/lib/format";
-import { orderStatusLabel } from "@/lib/labels";
-import { Card, SectionTitle, Stat, List, Row, EmptyState, Callout, Badge } from "@/components/ui";
+import { SectionTitle, SeeAll, StatGroup, List, Row, EmptyState, Badge, Hero, FlowPair, FlowChip, ProductThumb } from "@/components/ui";
+import { PageHeader } from "@/components/page-header";
 import { CashflowChart } from "@/components/cashflow-chart";
+import { DueSoon } from "./due-soon";
 import { Segmented } from "@/components/segmented";
-import { IconSpark, IconArrowDown, IconArrowUp } from "@/components/icons";
+import { IconBox, IconWallet, IconClipboard, IconHourglass } from "@/components/icons";
 
 const RANGES = [
   { key: "today", label: "Hari Ini" },
@@ -21,6 +22,17 @@ function pctChange(cur: number, prev: number) {
   return ((cur - prev) / prev) * 100;
 }
 
+/** Sapaan sesuai jam di WIB. */
+function greeting(now = new Date()) {
+  const h = Number(
+    new Intl.DateTimeFormat("en-GB", { timeZone: BUSINESS_TIME_ZONE, hour: "2-digit", hourCycle: "h23" }).format(now),
+  );
+  if (h < 11) return "Selamat pagi";
+  if (h < 15) return "Selamat siang";
+  if (h < 18) return "Selamat sore";
+  return "Selamat malam";
+}
+
 export default async function DashboardPage({ searchParams }: PageProps<"/dashboard">) {
   const { range } = await searchParams;
   const activeRange = typeof range === "string" ? range : "month";
@@ -28,16 +40,17 @@ export default async function DashboardPage({ searchParams }: PageProps<"/dashbo
   if (!ctx?.business) return null;
   const business = ctx.business;
   const isStaff = ctx.role === "staff";
+  const firstName = ctx.user.name.trim().split(/\s+/)[0] || ctx.user.name;
 
   const { from, to, label } = resolveRange(activeRange);
   const prev = previousRange(from, to);
   const { buckets, windowLabel } = cashflowBuckets(activeRange);
   const chartFrom = buckets[0].start;
 
-  const [sales, txs, prevTxs, chartTxs, orders, products, staffActivity] = await Promise.all([
+  const [sales, txs, prevTxs, chartTxs, activeOrders, products, receivables] = await Promise.all([
     prisma.sale.findMany({
       where: { businessId: business.id, date: { gte: from, lte: to } },
-      include: { items: { include: { product: true } }, channel: true },
+      include: { items: { include: { product: true } } },
     }),
     prisma.financialTransaction.findMany({
       where: { businessId: business.id, date: { gte: from, lte: to } },
@@ -46,28 +59,110 @@ export default async function DashboardPage({ searchParams }: PageProps<"/dashbo
     }),
     prisma.financialTransaction.findMany({
       where: { businessId: business.id, date: { gte: prev.from, lte: prev.to } },
+      select: { type: true, amount: true },
     }),
     prisma.financialTransaction.findMany({
       where: { businessId: business.id, date: { gte: chartFrom, lte: to } },
       select: { type: true, amount: true, date: true },
     }),
     prisma.order.findMany({
-      where: { businessId: business.id },
+      where: { businessId: business.id, status: { notIn: ["Completed", "Cancelled"] } },
       include: { customer: true, items: { include: { product: true } } },
       orderBy: { dueDate: "asc" },
     }),
     prisma.product.findMany({ where: { businessId: business.id } }),
-    prisma.activityLog.findMany({
-      where: { businessId: business.id, role: "staff" },
-      orderBy: { createdAt: "desc" },
-      take: 5,
-    }),
+    loadReceivables(business.id),
   ]);
 
+  // Sama persis dengan halaman Belum Lunas & Laporan (lihat lib/receivables.ts).
+  const outstandingAmount = receivables.reduce((s, r) => s + r.amount, 0);
+  const lowStock = products.filter((p) => p.status !== "inactive" && p.stock <= p.minStock);
+  const dueSoon = activeOrders.filter((o) => o.dueDate && o.dueDate <= daysFromNow(3));
+
+  const stats = (
+    <StatGroup
+      items={[
+        {
+          label: "Pesanan aktif",
+          value: `${activeOrders.length} pesanan`,
+          href: "/orders",
+          icon: <IconClipboard className="h-6 w-6" strokeWidth={1.75} />,
+          marker: "clay",
+        },
+        {
+          label: "Belum lunas",
+          value: formatIDRCompact(outstandingAmount),
+          tone: outstandingAmount > 0 ? "out" : "ink",
+          href: "/receivables",
+          icon: <IconHourglass className="h-6 w-6" strokeWidth={1.75} />,
+          marker: "teal",
+        },
+        {
+          label: "Stok menipis",
+          value: `${lowStock.length} produk`,
+          tone: lowStock.length > 0 ? "warn" : "ink",
+          href: "/products?filter=low",
+          icon: <IconBox className="h-6 w-6" strokeWidth={1.75} />,
+          marker: "ochre",
+        },
+      ]}
+    />
+  );
+  const header = <PageHeader eyebrow={`${greeting()}, ${firstName}`} title={business.name} />;
+
+  // ── Beranda staf: harga & stok produk, tanpa angka keuangan ──
+  if (isStaff) {
+    const catalog = products
+      .filter((p) => p.status !== "inactive")
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return (
+      <>
+        {header}
+        <div>
+          {stats}
+          <DueSoon orders={dueSoon} />
+          <div>
+            <SectionTitle action={<SeeAll href="/products" />}>Harga dan stok produk</SectionTitle>
+            {catalog.length === 0 ? (
+              <EmptyState
+                icon={<IconBox className="h-6 w-6" strokeWidth={1.8} />}
+                title="Belum ada produk"
+                body="Tambahkan produk beserta harga jual dan stoknya."
+                actionLabel="Tambah Produk"
+                actionHref="/products/new"
+              />
+            ) : (
+              <List>
+                {catalog.map((p) => (
+                  <Row
+                    key={p.id}
+                    href={`/products/${p.id}`}
+                    title={p.name}
+                    amount={formatIDR(p.sellingPrice)}
+                    amountSub={`stok ${p.stock}`}
+                    trailing={
+                      p.stock <= 0 ? (
+                        <Badge tone="bad">Habis</Badge>
+                      ) : p.stock <= p.minStock ? (
+                        <Badge tone="warn">Menipis</Badge>
+                      ) : undefined
+                    }
+                  />
+                ))}
+              </List>
+            )}
+          </div>
+        </div>
+      </>
+    );
+  }
+
+  // ── Beranda pemilik ──
   const income = txs.filter((t) => t.type === "INCOME").reduce((s, t) => s + t.amount, 0);
   const expense = txs.filter((t) => t.type === "EXPENSE").reduce((s, t) => s + t.amount, 0);
   const prevIncome = prevTxs.filter((t) => t.type === "INCOME").reduce((s, t) => s + t.amount, 0);
   const profit = income - expense;
+  const change = prevIncome > 0 ? pctChange(income, prevIncome) : null;
 
   const chartData = buckets.map((b) => {
     const inB = chartTxs.filter((t) => t.date >= b.start && t.date < b.end);
@@ -80,138 +175,25 @@ export default async function DashboardPage({ searchParams }: PageProps<"/dashbo
   });
   const chartHasData = chartData.some((b) => b.income > 0 || b.expense > 0);
 
-  const outstandingOrders = orders.filter((o) => o.remainingPayment > 0 && o.status !== "Cancelled");
-  const outstandingAmount = outstandingOrders.reduce((s, o) => s + o.remainingPayment, 0);
-  const lowStock = products.filter((p) => p.status !== "inactive" && p.stock <= p.minStock);
-  const activeOrders = orders.filter((o) => o.status !== "Completed" && o.status !== "Cancelled");
-
-  const productTotals = new Map<string, { units: number; revenue: number }>();
+  const productTotals = new Map<string, { units: number; revenue: number; photoUrl: string | null }>();
   for (const s of sales)
     for (const it of s.items) {
-      const e = productTotals.get(it.product.name) ?? { units: 0, revenue: 0 };
+      const e = productTotals.get(it.product.name) ?? { units: 0, revenue: 0, photoUrl: it.product.photoUrl };
       e.units += it.quantity;
       e.revenue += it.lineTotal;
       productTotals.set(it.product.name, e);
     }
-  const topProducts = [...productTotals.entries()].sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 4);
+  const topProducts = [...productTotals.entries()].sort((a, b) => b[1].revenue - a[1].revenue).slice(0, 3);
 
-  const dueSoon = orders.filter(
-    (o) => o.dueDate && o.status !== "Completed" && o.status !== "Cancelled" && o.dueDate <= daysFromNow(3)
-  );
-
-  const insights: string[] = [];
-  if (!isStaff && prevIncome > 0) {
-    const d = pctChange(income, prevIncome);
-    insights.push(`Uang masuk ${d >= 0 ? "naik" : "turun"} ${Math.abs(d).toFixed(0)}% dari periode sebelumnya.`);
-  }
-  if (!isStaff && profit < 0) insights.push("Pengeluaran lebih besar dari pemasukan periode ini. Cek biaya produksi.");
-  if (topProducts.length > 0) insights.push(`${topProducts[0][0]} paling banyak menghasilkan uang periode ini.`);
-  if (outstandingOrders.length > 0)
-    insights.push(`${outstandingOrders.length} pesanan belum lunas, total ${formatIDR(outstandingAmount)}.`);
-  if (lowStock.length > 0) insights.push(`Stok menipis: ${lowStock.map((p) => p.name).join(", ")}.`);
-
-  const hasData = sales.length > 0 || txs.length > 0 || orders.length > 0;
-
-  // ── Beranda staf: harga & stok produk, tanpa angka keuangan ──
-  if (isStaff) {
-    const catalog = products
-      .filter((p) => p.status !== "inactive")
-      .sort((a, b) => a.name.localeCompare(b.name));
-    return (
-      <>
-        <header className="mb-5">
-          <p className="label">Beranda</p>
-          <h1 className="mt-1 text-[25px] font-bold text-ink">{business.name}</h1>
-        </header>
-
-        <div className="grid grid-cols-3 gap-2.5">
-          <Stat label="Pesanan Aktif" value={String(activeOrders.length)} href="/orders" />
-          <Stat
-            label="Belum Lunas"
-            value={formatIDRCompact(outstandingAmount)}
-            tone={outstandingAmount > 0 ? "out" : "ink"}
-            href="/receivables"
-          />
-          <Stat
-            label="Stok Menipis"
-            value={String(lowStock.length)}
-            sub="produk"
-            tone={lowStock.length > 0 ? "warn" : "ink"}
-            href="/products"
-          />
-        </div>
-
-        {dueSoon.length > 0 && (
-          <>
-            <SectionTitle>Segera Jatuh Tempo</SectionTitle>
-            <List>
-              {dueSoon.slice(0, 4).map((o) => (
-                <Row
-                  key={o.id}
-                  href={`/orders/${o.id}`}
-                  title={o.customer?.name ?? "Tanpa nama"}
-                  meta={`${o.items.map((i) => i.product.name).join(", ")} · ${o.dueDate ? formatDate(o.dueDate) : "-"}`}
-                  amount={formatIDRCompact(o.remainingPayment)}
-                  amountTone="out"
-                  trailing={<Badge tone="warn">{orderStatusLabel(o.status)}</Badge>}
-                  chevron={false}
-                />
-              ))}
-            </List>
-          </>
-        )}
-
-        <SectionTitle
-          action={
-            <Link href="/products" className="text-[12.5px] font-semibold text-clay">
-              Kelola
-            </Link>
-          }
-        >
-          Harga &amp; Stok Produk
-        </SectionTitle>
-        {catalog.length === 0 ? (
-          <EmptyState
-            icon={<IconSpark className="h-6 w-6" strokeWidth={1.7} />}
-            title="Belum ada produk"
-            body="Tambahkan produk beserta harga jual dan stoknya."
-            actionLabel="Tambah Produk"
-            actionHref="/products/new"
-          />
-        ) : (
-          <List>
-            {catalog.map((p) => (
-              <Row
-                key={p.id}
-                href={`/products/${p.id}`}
-                title={p.name}
-                amount={formatIDR(p.sellingPrice)}
-                amountSub={`stok ${p.stock}`}
-                trailing={p.stock <= p.minStock ? <Badge tone="warn">menipis</Badge> : undefined}
-              />
-            ))}
-          </List>
-        )}
-
-        <div className="mt-6">
-          <Callout>
-            Angka di sini adalah harga jual dan stok terkini. Kalau stok atau harga berubah, minta owner
-            memperbaruinya di menu Produk.
-          </Callout>
-        </div>
-      </>
-    );
-  }
+  const hasData = sales.length > 0 || txs.length > 0 || activeOrders.length > 0 || receivables.length > 0;
 
   return (
     <>
-      <header className="mb-5">
-        <p className="label">{label}</p>
-        <h1 className="mt-1 text-[25px] font-bold text-ink">{business.name}</h1>
-      </header>
+      {header}
 
       <div className="mb-4">
         <Segmented
+          label="Periode"
           active={activeRange}
           options={RANGES.map((r) => ({ ...r, href: `/dashboard?range=${r.key}` }))}
         />
@@ -219,106 +201,66 @@ export default async function DashboardPage({ searchParams }: PageProps<"/dashbo
 
       {!hasData ? (
         <EmptyState
-          icon={<IconSpark className="h-6 w-6" strokeWidth={1.7} />}
+          icon={<IconWallet className="h-6 w-6" strokeWidth={1.8} />}
           title="Mulai dari satu catatan"
           body="Catat uang yang masuk dan keluar hari ini. Setelah beberapa catatan, untung rugi usaha akan terlihat sendiri di sini."
           actionLabel="Catat Uang Masuk"
           actionHref="/finance/new?type=INCOME"
         />
       ) : (
-        <>
-          <Card className="mb-3">
-            <p className="label">{profit >= 0 ? "Untung" : "Rugi"} {label.toLowerCase()}</p>
-            <p className={`figure mt-1.5 truncate text-[clamp(30px,10vw,40px)] ${profit >= 0 ? "text-ink" : "text-bad"}`}>
-              {formatIDR(profit)}
-            </p>
-            <div className="mt-4 grid grid-cols-2 gap-3 border-t border-line pt-3.5">
-              <div className="flex items-center gap-2.5">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-teal-soft text-teal">
-                  <IconArrowDown className="h-4 w-4" strokeWidth={2.2} />
-                </span>
-                <span className="min-w-0">
-                  <span className="label block">Masuk</span>
-                  <span className="tnum block truncate text-[14.5px] font-bold text-teal">{formatIDR(income)}</span>
-                </span>
-              </div>
-              <div className="flex items-center gap-2.5">
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-clay-soft text-clay">
-                  <IconArrowUp className="h-4 w-4" strokeWidth={2.2} />
-                </span>
-                <span className="min-w-0">
-                  <span className="label block">Keluar</span>
-                  <span className="tnum block truncate text-[14.5px] font-bold text-clay">{formatIDR(expense)}</span>
-                </span>
-              </div>
-            </div>
-          </Card>
+        <div>
+          <Hero
+            label={`${profit >= 0 ? "Untung" : "Rugi"} ${label.toLowerCase()}`}
+            value={formatIDR(profit)}
+            tone={profit >= 0 ? "ink" : "bad"}
+            aside={
+              change !== null ? (
+                <Badge tone={change >= 0 ? "info" : "warn"}>
+                  Masuk {change >= 0 ? "naik" : "turun"} {Math.abs(change).toFixed(0)}%
+                </Badge>
+              ) : undefined
+            }
+          >
+            <FlowPair income={formatIDR(income)} expense={formatIDR(expense)} incomeLabel="Uang masuk" expenseLabel="Uang keluar" />
+          </Hero>
 
-          <div className="grid grid-cols-3 gap-2.5">
-            <Stat label="Pesanan Aktif" value={String(activeOrders.length)} href="/orders" />
-            <Stat
-              label="Belum Lunas"
-              value={formatIDRCompact(outstandingAmount)}
-              tone={outstandingAmount > 0 ? "out" : "ink"}
-              href="/receivables"
-            />
-            <Stat
-              label="Stok Menipis"
-              value={String(lowStock.length)}
-              sub="produk"
-              tone={lowStock.length > 0 ? "warn" : "ink"}
-              href="/products"
-            />
-          </div>
+          {stats}
 
           {chartHasData && (
-            <div className="mt-3">
+            <div className="mt-8">
               <CashflowChart buckets={chartData} windowLabel={windowLabel} />
             </div>
           )}
 
-          {dueSoon.length > 0 && (
-            <>
-              <SectionTitle>Segera Jatuh Tempo</SectionTitle>
+          <DueSoon orders={dueSoon} />
+
+          {topProducts.length > 0 && (
+            <div>
+              <SectionTitle action={<SeeAll href="/products" />}>Produk terlaris</SectionTitle>
               <List>
-                {dueSoon.slice(0, 4).map((o) => (
+                {topProducts.map(([name, d]) => (
                   <Row
-                    key={o.id}
-                    href={`/orders/${o.id}`}
-                    title={o.customer?.name ?? "Tanpa nama"}
-                    meta={`${o.items.map((i) => i.product.name).join(", ")} · ${o.dueDate ? formatDate(o.dueDate) : "-"}`}
-                    amount={formatIDRCompact(o.remainingPayment)}
-                    amountTone="out"
-                    trailing={<Badge tone="warn">{orderStatusLabel(o.status)}</Badge>}
+                    key={name}
+                    leading={<ProductThumb name={name} photoUrl={d.photoUrl} />}
+                    title={name}
+                    meta={`${d.units} unit terjual`}
+                    amount={formatIDR(d.revenue)}
                     chevron={false}
                   />
                 ))}
               </List>
-            </>
-          )}
-
-          {topProducts.length > 0 && (
-            <>
-              <SectionTitle action={<Link href="/products" className="text-[12.5px] font-semibold text-clay">Semua</Link>}>
-                Produk Terlaris
-              </SectionTitle>
-              <List>
-                {topProducts.map(([name, d]) => (
-                  <Row key={name} title={name} meta={`${d.units} unit terjual`} amount={formatIDR(d.revenue)} chevron={false} />
-                ))}
-              </List>
-            </>
+            </div>
           )}
 
           {txs.length > 0 && (
-            <>
-              <SectionTitle action={<Link href="/finance" className="text-[12.5px] font-semibold text-clay">Semua</Link>}>
-                Catatan Terakhir
-              </SectionTitle>
+            <div>
+              <SectionTitle action={<SeeAll href="/finance" />}>Catatan terakhir</SectionTitle>
               <List>
                 {txs.slice(0, 5).map((t) => (
                   <Row
                     key={t.id}
+                    href={`/finance/${t.id}`}
+                    leading={<FlowChip dir={t.type === "INCOME" ? "in" : "out"} />}
                     title={t.description || t.incomeCategory?.name || t.expenseCategory?.name || "Transaksi"}
                     meta={`${formatDate(t.date)} · ${t.incomeCategory?.name ?? t.expenseCategory?.name ?? "Lainnya"}`}
                     amount={`${t.type === "INCOME" ? "+" : "−"}${formatIDR(t.amount)}`}
@@ -327,56 +269,9 @@ export default async function DashboardPage({ searchParams }: PageProps<"/dashbo
                   />
                 ))}
               </List>
-            </>
+            </div>
           )}
-
-          {staffActivity.length > 0 && (
-            <>
-              <SectionTitle
-                action={
-                  <Link href="/activity" className="text-[12.5px] font-semibold text-clay">
-                    Semua
-                  </Link>
-                }
-              >
-                Aktivitas Staf Terakhir
-              </SectionTitle>
-              <List>
-                {staffActivity.map((l) => (
-                  <Row
-                    key={l.id}
-                    title={l.summary}
-                    meta={`${formatDate(l.createdAt)} · ${l.userName}`}
-                    chevron={false}
-                  />
-                ))}
-              </List>
-            </>
-          )}
-
-          {insights.length > 0 && (
-            <>
-              <SectionTitle>Yang Perlu Diperhatikan</SectionTitle>
-              <Card>
-                <ul className="flex flex-col gap-2.5">
-                  {insights.map((text, i) => (
-                    <li key={i} className="flex gap-2.5 text-[13px] leading-relaxed text-ink-2">
-                      <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-clay" />
-                      {text}
-                    </li>
-                  ))}
-                </ul>
-              </Card>
-            </>
-          )}
-
-          <div className="mt-6">
-            <Callout>
-              Pisahkan uang usaha dari uang pribadi. Kalau ambil uang usaha untuk keperluan rumah, catat sebagai uang
-              keluar supaya untung rugi tetap terbaca benar.
-            </Callout>
-          </div>
-        </>
+        </div>
       )}
     </>
   );
