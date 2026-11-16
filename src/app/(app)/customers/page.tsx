@@ -67,7 +67,7 @@ export default async function CustomersPage({ searchParams }: PageProps<"/custom
                 leading={<Avatar name={c.name} />}
                 title={c.name}
                 meta={`${c.sales.length} pembelian · ${formatIDR(spent)}`}
-                trailing={owed > 0 ? <Badge tone="warn">Belum lunas {formatIDR(owed)}</Badge> : undefined}
+                status={owed > 0 ? <Badge tone="warn">Belum lunas {formatIDR(owed)}</Badge> : undefined}
               />
             );
           })}
